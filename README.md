@@ -17,8 +17,9 @@ GitHub builds a new APK after changes are pushed to `main`. This is a debug APK 
 - Calendar, recent history, and a simple seven-day progress overview.
 - Private daily notes, saved only on this device.
 - Optional manual supply counts, low-supply thresholds, and expiry dates. Supply counts are not automatically reduced.
-- Scan or manually enter a package barcode on supported devices. The barcode is saved locally; Mediketh does not look up product details or infer doses or instructions.
-- Light, dark, and device-matched themes, plus locale-aware date/time formats.
+- Scan package barcodes for a possible Open Food Facts food-product listing, or manually add a barcode. A user-approved product match can link multiple brand codes to the same routine item; this is not a medicine verification service.
+- Capture up to three package-label photos for on-device ML Kit text recognition; photos are discarded and never uploaded. Recognized text and product-catalog details are suggestions to verify against the label.
+- Light, dark, high-contrast dark, and device-matched themes, plus locale-aware date/time formats.
 - JSON backup export, import, and delete-data controls. On Android, export opens the system share sheet so you can save the file to a location you choose; in the browser, it downloads directly.
 
 ## Run the web preview locally
@@ -33,6 +34,9 @@ The browser preview cannot send Android notifications. Test reminder delivery on
 ## Privacy and limitations
 
 - Routine data, notes, and history are stored locally. There are no accounts, cloud sync, or analytics.
+- When you explicitly scan a barcode for lookup, that barcode is sent to Open Food Facts; package photos, routine details, and dose history are not sent. Open Food Facts data is community-contributed and may be incomplete or inaccurate.
+- Open Food Facts is a food-products database, not a medical-product database. Its API asks integrators to review the [API documentation](https://openfoodfacts.github.io/openfoodfacts-server/api/), [reuse terms](https://world.openfoodfacts.org/terms-of-use), and [API usage form](https://docs.google.com/forms/d/e/1FAIpQLSdIE3D8qvjC_zRJw1W8OmuHhsWJ_NSckiiniAHlfaVwUZCziQ/viewform) before using it. Product listings are only suggestions and must be checked against the actual package.
+- Product identity matching never marks a dose as taken by itself. After matching, you must separately confirm that you actually took/completed the scheduled step.
 - Barcode scanning requires camera permission. Camera images are used for scanning and are not saved or sent to a product database. Check package details yourself; the barcode does not identify a safe dose or instructions.
 - Keep exported backups private; they may contain sensitive personal notes. Android export uses a temporary app cache file shared through Android's share sheet.
 - The interface is currently English. Regional date/time formatting is available, but full translations and right-to-left UI localization are not yet included.

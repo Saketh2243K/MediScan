@@ -26,7 +26,7 @@ jobs:
         run: npx cap add android
       - name: Sync Capacitor
         run: npx cap sync android
-      - name: Enable camera permission for barcode scanning
+      - name: Configure camera permission and OCR metadata
         run: node scripts/enable-android-camera.mjs
       - name: Set up Java
         uses: actions/setup-java@v4

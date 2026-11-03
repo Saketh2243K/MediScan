@@ -1,6 +1,8 @@
 import './style.css';
 import { Capacitor } from '@capacitor/core';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { BarcodeFormat, BarcodeScanner, LensFacing } from '@capacitor-mlkit/barcode-scanning';
+import { CapacitorPluginMlKitTextRecognition } from '@pantrist/capacitor-plugin-ml-kit-text-recognition';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Share } from '@capacitor/share';
@@ -18,6 +20,8 @@ const WEEKDAYS = [
   { value: 7, short: 'Sun', full: 'Sunday' }
 ];
 const DEFAULT_WEEK = WEEKDAYS.map(day => day.value);
+const MAX_PRODUCT_BARCODES = 20;
+const barcodeProductCache = new Map();
 const ROUTES = ['today', 'routine', 'calendar', 'more', 'history', 'insights', 'notes', 'settings'];
 const ROUTE_INFO = {
   today: ['Today', 'Your daily plan, one step at a time.'],
@@ -113,6 +117,10 @@ function normalizeProduct(product, usedNotificationIds) {
       }
     }
   }
+  const barcodes = [...new Set([
+    ...(Array.isArray(product.barcodes) ? product.barcodes : []),
+    product.barcode
+  ].filter(code => typeof code === 'string').map(code => code.trim()).filter(code => code && code.length <= 64))].slice(0, MAX_PRODUCT_BARCODES);
   return {
     id: product.id,
     name: product.name.trim(),
@@ -125,7 +133,9 @@ function normalizeProduct(product, usedNotificationIds) {
     stock: Number.isInteger(product.stock) && product.stock >= 0 ? product.stock : null,
     refillAt: Number.isInteger(product.refillAt) && product.refillAt >= 0 ? product.refillAt : null,
     expiryDate: typeof product.expiryDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : '',
-    barcode: typeof product.barcode === 'string' ? product.barcode.trim().slice(0, 64) : '',
+    activeIngredient: typeof product.activeIngredient === 'string' ? product.activeIngredient.trim().slice(0, 100) : '',
+    barcode: barcodes[0] || '',
+    barcodes,
     note: typeof product.note === 'string' ? product.note.slice(0, 1000) : ''
   };
 }
@@ -170,7 +180,7 @@ function normalizeLogs(rawLogs, products) {
 function normalizePreferences(raw) {
   const supportedLocales = ['system', 'en-US', 'en-GB', 'hi-IN', 'es-ES', 'ar'];
   return {
-    theme: ['system', 'light', 'dark'].includes(raw?.theme) ? raw.theme : 'system',
+    theme: ['system', 'light', 'dark', 'high-contrast'].includes(raw?.theme) ? raw.theme : 'system',
     locale: supportedLocales.includes(raw?.locale) ? raw.locale : 'system',
     reducedMotion: raw?.reducedMotion === true
   };
@@ -346,6 +356,7 @@ function renderToday() {
     ${isToday ? `<div class="help-card"><span aria-hidden="true">ⓘ</span><p>Only confirm a medicine after taking it as directed. Mediketh is a personal tracker, not medical advice.</p></div>` : ''}`;
   screen.querySelectorAll('[data-confirm-dose]').forEach(button => button.addEventListener('click', () => confirmDoseAction(button.dataset.product, button.dataset.time, day, 'taken')));
   screen.querySelectorAll('[data-skip-dose]').forEach(button => button.addEventListener('click', () => confirmDoseAction(button.dataset.product, button.dataset.time, day, 'skipped')));
+  screen.querySelectorAll('[data-scan-dose]').forEach(button => button.addEventListener('click', () => scanDoseProduct(button.dataset.product, button.dataset.time, day)));
   screen.querySelectorAll('[data-snooze-dose]').forEach(button => button.addEventListener('click', () => snoozeDose(button.dataset.product, button.dataset.time, day)));
   screen.querySelector('[data-route="routine"]')?.addEventListener('click', () => navigate('routine'));
   screen.querySelector('[data-action="add"]')?.addEventListener('click', () => openProductForm());
@@ -360,7 +371,7 @@ function renderDoseCard(product, time, day, savedKey) {
   return `<article class="dose-card ${status === 'taken' ? 'dose-done' : ''}">
     <div class="dose-time"><span>${escapeHtml(formatTime(time))}</span><span class="dose-dot"></span></div>
     <div class="dose-main"><div class="dose-icon ${product.kind === 'Skincare' ? 'skin' : ''}" aria-hidden="true">${product.kind === 'Skincare' ? '✧' : '✚'}</div><div class="dose-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.kind)}${stateLabel ? ` · ${escapeHtml(stateLabel)}` : ''}</span></div></div>
-    ${isToday ? `<div class="dose-actions">${status ? `<button class="soft-button" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">${status === 'taken' ? 'Undo' : 'Mark taken'}</button>` : `<button class="primary-button dose-taken" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">✓ Taken</button>${state.remindersEnabled && Capacitor.isNativePlatform() ? `<button class="icon-button" data-snooze-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Snooze reminder for ${escapeHtml(product.name)}">＋10m</button>` : ''}<button class="icon-button" data-skip-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Skip ${escapeHtml(product.name)} today">Skip</button>`}</div>` : ''}</article>`;
+    ${isToday ? `<div class="dose-actions">${status ? `<button class="soft-button" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">${status === 'taken' ? 'Undo' : 'Mark taken'}</button>` : `<button class="primary-button dose-taken" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">✓ Taken</button><button class="soft-button" data-scan-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">Scan match</button>${state.remindersEnabled && Capacitor.isNativePlatform() ? `<button class="icon-button" data-snooze-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Snooze reminder for ${escapeHtml(product.name)}">＋10m</button>` : ''}<button class="icon-button" data-skip-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Skip ${escapeHtml(product.name)} today">Skip</button>`}</div>` : ''}</article>`;
 }
 
 function renderRoutine() {
@@ -383,7 +394,8 @@ function renderProductCard(product) {
   return `<article class="product-card card-surface">
     <div class="product-card-top"><div class="dose-icon ${product.kind === 'Skincare' ? 'skin' : ''}" aria-hidden="true">${product.kind === 'Skincare' ? '✧' : '✚'}</div><span class="kind-chip">${escapeHtml(product.kind)}</span><button class="more-button" data-edit-product="${escapeHtml(product.id)}" aria-label="Edit ${escapeHtml(product.name)}">•••</button></div>
     <h3>${escapeHtml(product.name)}</h3><p class="product-schedule">${escapeHtml(times)} <span>·</span> ${escapeHtml(days)}</p>
-    ${product.barcode ? `<p class="product-barcode">Barcode · ${escapeHtml(product.barcode)}</p>` : ''}
+    ${product.activeIngredient ? `<p class="product-barcode">Routine identity · ${escapeHtml(product.activeIngredient)}</p>` : ''}
+    ${product.barcodes.length ? `<p class="product-barcode">${product.barcodes.length} saved package barcode${product.barcodes.length === 1 ? '' : 's'}</p>` : ''}
     ${(lowStock || expiring) ? `<div class="stock-alert">${lowStock ? `Low supply: ${product.stock} left` : ''}${lowStock && expiring ? ' · ' : ''}${expiring ? `Expires ${escapeHtml(product.expiryDate)}` : ''}</div>` : ''}
     <div class="product-meta">${product.stock !== null ? `<span>▣ ${product.stock} in supply</span>` : '<span>Local reminders</span>'}<div><button class="small-action" data-stock="${escapeHtml(product.id)}">Update supply</button><button class="small-action" data-edit-product="${escapeHtml(product.id)}">Edit</button></div></div>
   </article>`;
@@ -529,7 +541,7 @@ function renderSettings() {
   const screen = document.querySelector('#screen');
   screen.innerHTML = `
     <section class="settings-section"><span class="section-kicker">APPEARANCE</span>
-      <label class="setting-row"><span><strong>Theme</strong><small>Choose the app appearance</small></span><select id="theme-select"><option value="system">Match device</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <label class="setting-row"><span><strong>Theme</strong><small>Choose the app appearance</small></span><select id="theme-select"><option value="system">Match device</option><option value="light">Light</option><option value="dark">Dark</option><option value="high-contrast">Dark high contrast</option></select></label>
       <label class="setting-row"><span><strong>Date and time format</strong><small>Choose the format for dates and times</small></span><select id="locale-select"><option value="system">Device default</option><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option><option value="hi-IN">Hindi (India)</option><option value="es-ES">Español (España)</option><option value="ar">العربية</option></select></label>
       <label class="setting-row"><span><strong>Reduce motion</strong><small>Use fewer animated transitions</small></span><input id="motion-toggle" type="checkbox" ${state.preferences.reducedMotion ? 'checked' : ''}></label>
     </section>
@@ -592,7 +604,9 @@ function openProductForm(productId) {
     description: 'Set reminder times and days based on your label or care instructions.',
     content: `
       <label for="routine-name">Name</label><input id="routine-name" name="name" maxlength="80" required value="${escapeHtml(existing?.name || '')}">
-      <label for="routine-barcode">Package barcode (optional)</label><div class="barcode-entry"><input id="routine-barcode" name="barcode" maxlength="64" autocomplete="off" value="${escapeHtml(existing?.barcode || '')}" aria-describedby="barcode-help"><button class="soft-button" type="button" data-scan-barcode>Scan</button></div><small id="barcode-help" class="field-help">Scanning saves the code only. Check the package and enter the name yourself; no dose or instructions are inferred.</small>
+      <label for="routine-ingredient">Routine identity / active ingredient (optional)</label><input id="routine-ingredient" name="activeIngredient" maxlength="100" value="${escapeHtml(existing?.activeIngredient || '')}" placeholder="For example, Vitamin C"><small class="field-help">Use the ingredient printed on your label. This helps suggest a match when the brand changes.</small>
+      <label for="routine-barcode">Package barcodes (optional)</label><div class="barcode-entry"><input id="routine-barcode" name="barcodes" maxlength="1400" autocomplete="off" value="${escapeHtml((existing?.barcodes || []).join(', '))}" aria-describedby="barcode-help"><button class="soft-button" type="button" data-scan-barcode>Scan</button></div><small id="barcode-help" class="field-help">Separate codes with commas. A lookup sends only the barcode to Open Food Facts; label photos stay on this device. Catalog details may be incomplete or wrong.</small>
+      <div class="product-lookup-result" data-product-lookup aria-live="polite"></div><button class="soft-button label-photo-button" type="button" data-read-label>Read package text (up to 3 photos)</button><small class="field-help">Photos are processed on-device and discarded; verify all recognized text yourself.</small><textarea id="package-text" class="package-text" maxlength="3000" placeholder="On-device label text will appear here; it is not saved." aria-label="Recognized package label text"></textarea>
       <label for="routine-kind">Type</label><select id="routine-kind" name="kind"><option ${existing?.kind !== 'Skincare' ? 'selected' : ''}>Medicine</option><option ${existing?.kind === 'Skincare' ? 'selected' : ''}>Skincare</option></select>
       <label for="routine-times">Daily reminder times</label><input id="routine-times" name="times" type="text" placeholder="08:00, 20:00" value="${escapeHtml((existing?.times || ['08:00']).join(', '))}" aria-describedby="times-help"><small id="times-help" class="field-help">Use 24-hour times separated by commas, such as 08:00, 14:30.</small>
       <fieldset class="weekday-field"><legend>Repeat on</legend><div class="weekday-picker">${WEEKDAYS.map(day => `<label><input type="checkbox" name="days" value="${day.value}" ${days.includes(day.value) ? 'checked' : ''}><span>${escapeHtml(formatWeekday(day.value))}</span></label>`).join('')}</div></fieldset>
@@ -623,6 +637,12 @@ function openProductForm(productId) {
       }
       const stock = optionalInteger(values.get('stock'));
       const refillAt = optionalInteger(values.get('refillAt'));
+      const barcodes = [...new Set(String(values.get('barcodes') || '').split(',').map(code => code.trim()).filter(Boolean))];
+      if (barcodes.length > MAX_PRODUCT_BARCODES || barcodes.some(code => code.length > 64)) {
+        error.textContent = `Enter at most ${MAX_PRODUCT_BARCODES} barcodes, each no longer than 64 characters.`;
+        form.querySelector('#routine-barcode').focus();
+        return;
+      }
       const next = {
         ...(existing || {}),
         id: existing?.id || makeId(),
@@ -634,7 +654,9 @@ function openProductForm(productId) {
         stock,
         refillAt,
         expiryDate: String(values.get('expiryDate') || ''),
-        barcode: String(values.get('barcode') || '').trim(),
+        activeIngredient: String(values.get('activeIngredient') || '').trim(),
+        barcode: barcodes[0] || '',
+        barcodes,
         note: existing?.note || ''
       };
       next.notificationIds = buildNotificationIds(next, state.products);
@@ -655,26 +677,234 @@ function openProductForm(productId) {
     }
   });
   dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
-  dialog.querySelector('[data-scan-barcode]').addEventListener('click', () => startBarcodeScan(dialog));
+  dialog.querySelector('[data-scan-barcode]').addEventListener('click', () => startBarcodeScan(dialog, handleScannedBarcode));
+  dialog.querySelector('[data-read-label]').addEventListener('click', () => readPackageLabel(text => {
+    dialog.querySelector('#package-text').value = text;
+    const lookup = dialog.querySelector('[data-product-lookup]');
+    lookup.textContent = 'Text recognized on-device. Review the label and enter the active ingredient yourself; OCR does not identify a safe dose.';
+  }));
   dialog.querySelector('#routine-name').focus();
+
+  async function handleScannedBarcode(barcode) {
+    const barcodeInput = dialog.querySelector('#routine-barcode');
+    const currentCodes = String(barcodeInput.value).split(',').map(code => code.trim()).filter(Boolean);
+    if (!currentCodes.includes(barcode)) currentCodes.push(barcode);
+    barcodeInput.value = currentCodes.join(', ');
+    await showBarcodeLookup(barcode, dialog.querySelector('[data-product-lookup]'), dialog.querySelector('.form-error'), dialog.querySelector('#routine-ingredient').value);
+  }
 }
 
-async function startBarcodeScan(dialog) {
+async function lookupProductBarcode(barcode) {
+  if (barcodeProductCache.has(barcode)) return barcodeProductCache.get(barcode);
+  const url = new URL(`https://world.openfoodfacts.org/api/v3/product/${encodeURIComponent(barcode)}.json`);
+  url.searchParams.set('fields', 'code,product_name,brands,ingredients_text,categories_tags');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+    if (!response.ok) throw new Error(`Product catalog returned HTTP ${response.status}.`);
+    const result = await response.json();
+    const product = result?.status === 'success' && result.result?.id === 'product_found' ? result.product : null;
+    const lookup = product ? {
+      found: true,
+      name: typeof product.product_name === 'string' ? product.product_name.trim() : '',
+      brands: typeof product.brands === 'string' ? product.brands.trim() : '',
+      ingredients: typeof product.ingredients_text === 'string' ? product.ingredients_text.trim() : '',
+      categories: Array.isArray(product.categories_tags) ? product.categories_tags.filter(tag => typeof tag === 'string').slice(0, 20) : []
+    } : { found: false };
+    barcodeProductCache.set(barcode, lookup);
+    return lookup;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function scanDoseProduct(productId, time, day) {
+  if (day !== todayKey()) return;
+  const product = state.products.find(item => item.id === productId);
+  if (!product) {
+    pushToast('This routine item is no longer available.', 'error');
+    return;
+  }
+  const dialog = openDialog({
+    title: `Match a package to ${escapeHtml(product.name)}?`,
+    description: 'The barcode is sent to Open Food Facts for a possible product listing. Package photos, your routine, and health history are not sent. A product match does not mean you took a dose.',
+    content: '<p class="product-lookup-result" data-scan-status>Scan the barcode, then check the product and printed label yourself.</p><pre class="photo-scan-text" data-scan-label></pre><p class="form-error" role="alert"></p>',
+    actions: '<button class="soft-button" type="button" data-cancel>Cancel</button><button class="soft-button" type="button" data-read-label>Read label photos</button><button class="primary-button" type="button" data-start-scan>Scan barcode</button>'
+  });
+  const status = dialog.querySelector('[data-scan-status]');
+  const labelText = dialog.querySelector('[data-scan-label]');
   const error = dialog.querySelector('.form-error');
+  const actions = dialog.querySelector('.dialog-actions');
+  dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+  dialog.querySelector('[data-read-label]').addEventListener('click', () => readPackageLabel(text => {
+    labelText.textContent = text;
+    status.textContent = product.activeIngredient && ingredientMatchesText(product.activeIngredient, text)
+      ? `On-device OCR found text matching “${product.activeIngredient}”. Check the package yourself; OCR may misread it.`
+      : 'Review the recognized package text above. It may be incomplete or misread.';
+  }));
+  dialog.querySelector('[data-start-scan]').addEventListener('click', async event => {
+    event.currentTarget.disabled = true;
+    await startBarcodeScan(dialog, async barcode => {
+      status.textContent = `Scanned barcode ${barcode}. Looking up a product listing…`;
+      error.textContent = '';
+      let lookup = { found: false };
+      try {
+        lookup = await lookupProductBarcode(barcode);
+      } catch (lookupError) {
+        error.textContent = `Online lookup failed: ${lookupError.name === 'AbortError' ? 'request timed out' : lookupError.message}. You can still compare the printed label manually.`;
+      }
+      if (lookup.found) {
+        const ingredientMatch = product.activeIngredient && ingredientMatchesText(product.activeIngredient, lookup.ingredients);
+        status.textContent = `Catalog suggestion: ${lookup.name || 'Name not listed'}${lookup.brands ? ` · ${lookup.brands}` : ''}. Ingredients: ${lookup.ingredients || 'not listed'}. ${ingredientMatch ? `The catalog text matches “${product.activeIngredient}”; verify on the package.` : product.activeIngredient ? `The catalog does not confirm “${product.activeIngredient}”; verify on the package.` : 'No routine ingredient is configured for comparison.'} Catalog entries are community submitted and may be incomplete or inaccurate.`;
+      } else {
+        status.textContent = `No catalog listing found for ${barcode}. Read the ingredient on the actual package before deciding whether it matches ${product.activeIngredient || product.name}.`;
+      }
+      actions.innerHTML = '<button class="soft-button" type="button" data-cancel-match>No, leave unchanged</button><button class="primary-button" type="button" data-confirm-match>Yes, same routine item</button>';
+      dialog.querySelector('[data-cancel-match]').addEventListener('click', () => dialog.close());
+      dialog.querySelector('[data-confirm-match]').addEventListener('click', async event => {
+        const confirmButton = event.currentTarget;
+        confirmButton.disabled = true;
+        const currentProduct = state.products.find(item => item.id === productId);
+        if (!currentProduct) {
+          error.textContent = 'This routine item is no longer available.';
+          return;
+        }
+        if (!(currentProduct.barcodes || []).includes(barcode) && (currentProduct.barcodes || []).length >= MAX_PRODUCT_BARCODES) {
+          error.textContent = `This item already has ${MAX_PRODUCT_BARCODES} saved barcodes. Edit the routine to remove an old code first.`;
+          confirmButton.disabled = false;
+          return;
+        }
+        const previousProducts = state.products;
+        const barcodes = [...new Set([...(currentProduct.barcodes || []), barcode])].slice(0, MAX_PRODUCT_BARCODES);
+        state.products = state.products.map(item => item.id === productId ? {
+          ...item,
+          barcode: barcodes[0] || '',
+          barcodes
+        } : item);
+        try {
+          save();
+        } catch (saveError) {
+          state.products = previousProducts;
+          error.textContent = saveError.message;
+          confirmButton.disabled = false;
+          return;
+        }
+        dialog.close();
+        render();
+        pushToast('Package linked. Confirm separately if you actually took this dose.');
+        confirmDoseAction(productId, time, day, 'taken');
+      });
+    });
+  });
+}
+
+function ingredientMatchesText(activeIngredient, text) {
+  const query = activeIngredient.trim().toLocaleLowerCase();
+  if (!query || !text.trim()) return false;
+  const normalizedText = text.toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const terms = query === 'vitamin c'
+    ? ['vitamin c', 'ascorbic acid', 'ascorbate']
+    : [query];
+  return terms.some(term => {
+    const normalizedTerm = term.toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return normalizedTerm.length > 1 && ` ${normalizedText} `.includes(` ${normalizedTerm} `);
+  });
+}
+
+async function showBarcodeLookup(barcode, resultElement, errorElement, activeIngredient = '') {
+  resultElement.textContent = `Looking up barcode ${barcode} in Open Food Facts…`;
+  errorElement.textContent = '';
+  try {
+    const lookup = await lookupProductBarcode(barcode);
+    if (!lookup.found) {
+      resultElement.textContent = 'No catalog entry found. Read the printed label and verify the ingredient yourself.';
+      return lookup;
+    }
+    const ingredientMatch = ingredientMatchesText(activeIngredient, lookup.ingredients);
+    const name = lookup.name || 'Name not listed';
+    const ingredients = lookup.ingredients ? ` Ingredients: ${lookup.ingredients.slice(0, 260)}${lookup.ingredients.length > 260 ? '…' : ''}` : ' Ingredient details are not listed.';
+    resultElement.textContent = `Open Food Facts listing: ${name}${lookup.brands ? ` · ${lookup.brands}` : ''}.${ingredients}${activeIngredient && ingredientMatch ? ` The listing contains text matching “${activeIngredient}”; verify it on the package.` : activeIngredient ? ` The listing does not confirm “${activeIngredient}”; check the package label.` : ''} Catalog data can be incomplete or inaccurate.`;
+    return lookup;
+  } catch (error) {
+    const reason = error.name === 'AbortError' ? 'The product lookup timed out.' : error.message;
+    resultElement.textContent = 'Online product lookup unavailable. The barcode can still be checked manually.';
+    errorElement.textContent = `Product lookup failed: ${reason}`;
+    return { found: false, error: reason };
+  }
+}
+
+async function readPackageLabel(onRecognizedText) {
+  let photoCount = 0;
+  let recognizedText = '';
+  const photoDialog = openDialog({
+    title: 'Read package label',
+    description: 'Take up to 3 photos of different label areas. ML Kit reads text on this device only; photos are not saved or uploaded.',
+    content: '<p class="photo-scan-status" data-photo-status>Capture the front, then the ingredients panel if needed.</p><pre class="photo-scan-text" data-photo-text></pre><p class="form-error" role="alert"></p>',
+    actions: '<button class="soft-button" type="button" data-cancel>Cancel</button><button class="soft-button" type="button" data-capture-photo>Take photo</button><button class="primary-button" type="button" data-use-photo-text disabled>Use recognized text</button>'
+  });
+  const captureButton = photoDialog.querySelector('[data-capture-photo]');
+  const useButton = photoDialog.querySelector('[data-use-photo-text]');
+  const status = photoDialog.querySelector('[data-photo-status]');
+  const textOutput = photoDialog.querySelector('[data-photo-text]');
+  const error = photoDialog.querySelector('.form-error');
+  photoDialog.querySelector('[data-cancel]').addEventListener('click', () => photoDialog.close());
+  useButton.addEventListener('click', () => {
+    photoDialog.close();
+    if (recognizedText) onRecognizedText(recognizedText);
+  });
+  captureButton.addEventListener('click', async () => {
+    if (photoCount >= 3) return;
+    captureButton.disabled = true;
+    error.textContent = '';
+    try {
+      if (!Capacitor.isNativePlatform()) throw new Error('On-device text recognition is available in the Android app. Enter the label details manually here.');
+      const photo = await Camera.getPhoto({
+        quality: 75,
+        width: 1400,
+        height: 1400,
+        source: CameraSource.Camera,
+        resultType: CameraResultType.Base64,
+        saveToGallery: false
+      });
+      if (!photo.base64String) throw new Error('The camera did not return an image for text recognition.');
+      const result = await CapacitorPluginMlKitTextRecognition.detectText({ base64Image: photo.base64String });
+      photoCount++;
+      recognizedText = [recognizedText, result.text].filter(Boolean).join('\n');
+      textOutput.textContent = recognizedText || 'No readable text detected yet.';
+      status.textContent = `${photoCount} of 3 photos read. Take another label photo or use the recognized text.`;
+      useButton.disabled = !recognizedText;
+      captureButton.textContent = photoCount === 3 ? 'Photo limit reached' : `Take another photo (${photoCount}/3)`;
+      captureButton.disabled = photoCount === 3;
+    } catch (captureError) {
+      error.textContent = `Label photo could not be read: ${captureError.message}`;
+      captureButton.disabled = false;
+    }
+  });
+}
+
+async function startBarcodeScan(dialog, onBarcode) {
+  const error = dialog.querySelector('.form-error');
+  const status = dialog.querySelector('[data-scan-status]');
+  const retryButton = dialog.querySelector('[data-start-scan]');
+  const reportError = message => {
+    (error || status).textContent = message;
+    if (retryButton) retryButton.disabled = false;
+  };
   try {
     const supported = await BarcodeScanner.isSupported();
     if (!supported.supported) {
-      error.textContent = 'Camera scanning is not available here. Enter the barcode manually instead.';
+      reportError('Camera scanning is not available here. Enter the barcode manually instead.');
       return;
     }
     let permission = await BarcodeScanner.checkPermissions();
     if (permission.camera !== 'granted') permission = await BarcodeScanner.requestPermissions();
     if (permission.camera !== 'granted') {
-      error.textContent = 'Camera access was not granted. Allow camera access in your device or browser settings, or enter the code manually.';
+      reportError('Camera access was not granted. Allow camera access in your device or browser settings, or enter the code manually.');
       return;
     }
   } catch (permissionError) {
-    error.textContent = `Camera access could not be checked: ${permissionError.message}`;
+    reportError(`Camera access could not be checked: ${permissionError.message}`);
     return;
   }
 
@@ -718,14 +948,22 @@ async function startBarcodeScan(dialog) {
     document.documentElement.classList.remove('barcode-scanner-active');
     overlay.remove();
     if (cleanupError) {
-      error.textContent = `Scanner could not shut down cleanly: ${cleanupError.message}`;
+      reportError(`Scanner could not shut down cleanly: ${cleanupError.message}`);
       return;
     }
     if (barcode) {
-      dialog.querySelector('#routine-barcode').value = barcode;
-      error.textContent = 'Barcode scanned. Enter and verify the package name; no product details or dose were looked up.';
+      if (onBarcode) {
+        try {
+          await onBarcode(barcode);
+        } catch (callbackError) {
+          (error || status).textContent = `Barcode result could not be processed: ${callbackError.message}`;
+        }
+      } else {
+        dialog.querySelector('#routine-barcode').value = barcode;
+        error.textContent = 'Barcode scanned. Enter and verify the package name; no product details or dose were looked up.';
+      }
     } else if (message) {
-      error.textContent = message;
+      reportError(message);
     }
   };
 

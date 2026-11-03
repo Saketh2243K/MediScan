@@ -39,6 +39,23 @@
   --shadow: 0 18px 50px #19342314;
 }
 
+:root[data-theme='high-contrast'] {
+  color-scheme: dark;
+  --page: #000000;
+  --surface: #080808;
+  --surface-raised: #141414;
+  --surface-muted: #1c1c1c;
+  --border: #ffffff;
+  --text: #ffffff;
+  --muted: #f0f0f0;
+  --subtle: #d6d6d6;
+  --accent: #ffeb3b;
+  --accent-strong: #ffeb3b;
+  --accent-ink: #000000;
+  --danger: #ff8a80;
+  --shadow: 0 18px 50px #000000;
+}
+
 :root[data-theme='system'] {
   color-scheme: dark;
 }
@@ -263,7 +280,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dialog-card input:not([type='checkbox']), .dialog-card select { width: 100%; min-height: 43px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--page); color: var(--text); font-size: 13px; }
 .barcode-entry { display: flex; align-items: stretch; gap: 8px; }
 .barcode-entry input { flex: 1; min-width: 0; }
+.product-lookup-result { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); color: var(--muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.label-photo-button { align-self: flex-start; margin-top: 12px; }
+.dialog-card .package-text { width: 100%; min-height: 80px; margin-top: 8px; resize: vertical; padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--page); color: var(--text); font-size: 11px; line-height: 1.5; }
+.package-text::placeholder { color: var(--subtle); }
 .product-barcode { margin: 0 0 12px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.photo-scan-status { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.photo-scan-text { max-height: 230px; overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--page); color: var(--text); font: 11px/1.5 'DM Sans', sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
 .field-help { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .weekday-field { margin: 17px 0 5px; padding: 0; border: 0; }
 .weekday-field legend { margin-bottom: 8px; font-size: 12px; font-weight: 700; }
