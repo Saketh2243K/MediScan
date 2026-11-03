@@ -1,5 +1,6 @@
 import './style.css';
 import { Capacitor } from '@capacitor/core';
+import { BarcodeFormat, BarcodeScanner, LensFacing } from '@capacitor-mlkit/barcode-scanning';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Share } from '@capacitor/share';
@@ -124,6 +125,7 @@ function normalizeProduct(product, usedNotificationIds) {
     stock: Number.isInteger(product.stock) && product.stock >= 0 ? product.stock : null,
     refillAt: Number.isInteger(product.refillAt) && product.refillAt >= 0 ? product.refillAt : null,
     expiryDate: typeof product.expiryDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(product.expiryDate) ? product.expiryDate : '',
+    barcode: typeof product.barcode === 'string' ? product.barcode.trim().slice(0, 64) : '',
     note: typeof product.note === 'string' ? product.note.slice(0, 1000) : ''
   };
 }
@@ -381,6 +383,7 @@ function renderProductCard(product) {
   return `<article class="product-card card-surface">
     <div class="product-card-top"><div class="dose-icon ${product.kind === 'Skincare' ? 'skin' : ''}" aria-hidden="true">${product.kind === 'Skincare' ? '✧' : '✚'}</div><span class="kind-chip">${escapeHtml(product.kind)}</span><button class="more-button" data-edit-product="${escapeHtml(product.id)}" aria-label="Edit ${escapeHtml(product.name)}">•••</button></div>
     <h3>${escapeHtml(product.name)}</h3><p class="product-schedule">${escapeHtml(times)} <span>·</span> ${escapeHtml(days)}</p>
+    ${product.barcode ? `<p class="product-barcode">Barcode · ${escapeHtml(product.barcode)}</p>` : ''}
     ${(lowStock || expiring) ? `<div class="stock-alert">${lowStock ? `Low supply: ${product.stock} left` : ''}${lowStock && expiring ? ' · ' : ''}${expiring ? `Expires ${escapeHtml(product.expiryDate)}` : ''}</div>` : ''}
     <div class="product-meta">${product.stock !== null ? `<span>▣ ${product.stock} in supply</span>` : '<span>Local reminders</span>'}<div><button class="small-action" data-stock="${escapeHtml(product.id)}">Update supply</button><button class="small-action" data-edit-product="${escapeHtml(product.id)}">Edit</button></div></div>
   </article>`;
@@ -589,6 +592,7 @@ function openProductForm(productId) {
     description: 'Set reminder times and days based on your label or care instructions.',
     content: `
       <label for="routine-name">Name</label><input id="routine-name" name="name" maxlength="80" required value="${escapeHtml(existing?.name || '')}">
+      <label for="routine-barcode">Package barcode (optional)</label><div class="barcode-entry"><input id="routine-barcode" name="barcode" maxlength="64" autocomplete="off" value="${escapeHtml(existing?.barcode || '')}" aria-describedby="barcode-help"><button class="soft-button" type="button" data-scan-barcode>Scan</button></div><small id="barcode-help" class="field-help">Scanning saves the code only. Check the package and enter the name yourself; no dose or instructions are inferred.</small>
       <label for="routine-kind">Type</label><select id="routine-kind" name="kind"><option ${existing?.kind !== 'Skincare' ? 'selected' : ''}>Medicine</option><option ${existing?.kind === 'Skincare' ? 'selected' : ''}>Skincare</option></select>
       <label for="routine-times">Daily reminder times</label><input id="routine-times" name="times" type="text" placeholder="08:00, 20:00" value="${escapeHtml((existing?.times || ['08:00']).join(', '))}" aria-describedby="times-help"><small id="times-help" class="field-help">Use 24-hour times separated by commas, such as 08:00, 14:30.</small>
       <fieldset class="weekday-field"><legend>Repeat on</legend><div class="weekday-picker">${WEEKDAYS.map(day => `<label><input type="checkbox" name="days" value="${day.value}" ${days.includes(day.value) ? 'checked' : ''}><span>${escapeHtml(formatWeekday(day.value))}</span></label>`).join('')}</div></fieldset>
@@ -630,6 +634,7 @@ function openProductForm(productId) {
         stock,
         refillAt,
         expiryDate: String(values.get('expiryDate') || ''),
+        barcode: String(values.get('barcode') || '').trim(),
         note: existing?.note || ''
       };
       next.notificationIds = buildNotificationIds(next, state.products);
@@ -650,7 +655,107 @@ function openProductForm(productId) {
     }
   });
   dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+  dialog.querySelector('[data-scan-barcode]').addEventListener('click', () => startBarcodeScan(dialog));
   dialog.querySelector('#routine-name').focus();
+}
+
+async function startBarcodeScan(dialog) {
+  const error = dialog.querySelector('.form-error');
+  try {
+    const supported = await BarcodeScanner.isSupported();
+    if (!supported.supported) {
+      error.textContent = 'Camera scanning is not available here. Enter the barcode manually instead.';
+      return;
+    }
+    let permission = await BarcodeScanner.checkPermissions();
+    if (permission.camera !== 'granted') permission = await BarcodeScanner.requestPermissions();
+    if (permission.camera !== 'granted') {
+      error.textContent = 'Camera access was not granted. Allow camera access in your device or browser settings, or enter the code manually.';
+      return;
+    }
+  } catch (permissionError) {
+    error.textContent = `Camera access could not be checked: ${permissionError.message}`;
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'barcode-scan-overlay';
+  const video = document.createElement('video');
+  video.className = 'barcode-scan-video';
+  video.setAttribute('aria-hidden', 'true');
+  video.playsInline = true;
+  overlay.append(video);
+  overlay.insertAdjacentHTML('beforeend', '<div class="barcode-scan-top"><strong>Scan package barcode</strong><p>Point the camera at the barcode. Mediketh saves only the code.</p></div><div class="barcode-scan-frame" aria-hidden="true"></div><button class="soft-button barcode-scan-cancel" type="button">Cancel scan</button>');
+  dialog.classList.add('barcode-scan-active');
+  document.body.classList.add('barcode-scanner-active');
+  document.documentElement.classList.add('barcode-scanner-active');
+  if (Capacitor.isNativePlatform()) document.body.classList.add('native-barcode-scanner');
+  dialog.append(overlay);
+  const cancel = overlay.querySelector('.barcode-scan-cancel');
+  cancel.disabled = true;
+  let active = true;
+  let scannerStarted = false;
+  const listeners = [];
+
+  const finish = async (barcode, message) => {
+    if (!active) return;
+    active = false;
+    let cleanupError = null;
+    try {
+      if (scannerStarted) await BarcodeScanner.stopScan();
+    } catch (stopError) {
+      cleanupError = stopError;
+    }
+    for (const listener of listeners) {
+      try {
+        await listener.remove();
+      } catch (removeError) {
+        cleanupError ||= removeError;
+      }
+    }
+    dialog.classList.remove('barcode-scan-active');
+    document.body.classList.remove('barcode-scanner-active', 'native-barcode-scanner');
+    document.documentElement.classList.remove('barcode-scanner-active');
+    overlay.remove();
+    if (cleanupError) {
+      error.textContent = `Scanner could not shut down cleanly: ${cleanupError.message}`;
+      return;
+    }
+    if (barcode) {
+      dialog.querySelector('#routine-barcode').value = barcode;
+      error.textContent = 'Barcode scanned. Enter and verify the package name; no product details or dose were looked up.';
+    } else if (message) {
+      error.textContent = message;
+    }
+  };
+
+  dialog.addEventListener('close', () => {
+    if (active) void finish('', '');
+  }, { once: true });
+  cancel.addEventListener('click', () => finish('', 'Barcode scan cancelled.'));
+  try {
+    listeners.push(await BarcodeScanner.addListener('barcodesScanned', event => {
+      const barcode = event.barcodes.find(item => typeof item.rawValue === 'string' && item.rawValue.trim());
+      if (!barcode) return;
+      if (barcode.rawValue.length > 64) {
+        error.textContent = 'This barcode is too long to save. You can enter a shorter code manually.';
+        return;
+      }
+      finish(barcode.rawValue.trim(), '');
+    }));
+    listeners.push(await BarcodeScanner.addListener('scanError', event => {
+      finish('', `Barcode scan failed: ${event.message}`);
+    }));
+    scannerStarted = true;
+    await BarcodeScanner.startScan({
+      formats: [BarcodeFormat.Ean8, BarcodeFormat.Ean13, BarcodeFormat.UpcA, BarcodeFormat.UpcE, BarcodeFormat.Code128],
+      lensFacing: LensFacing.Back,
+      videoElement: Capacitor.isNativePlatform() ? undefined : video
+    });
+    if (active) cancel.disabled = false;
+  } catch (scanError) {
+    await finish('', `Barcode scanner could not start: ${scanError.message}`);
+  }
 }
 
 function optionalInteger(value) {

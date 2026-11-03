@@ -17,6 +17,7 @@ GitHub builds a new APK after changes are pushed to `main`. This is a debug APK 
 - Calendar, recent history, and a simple seven-day progress overview.
 - Private daily notes, saved only on this device.
 - Optional manual supply counts, low-supply thresholds, and expiry dates. Supply counts are not automatically reduced.
+- Scan or manually enter a package barcode on supported devices. The barcode is saved locally; Mediketh does not look up product details or infer doses or instructions.
 - Light, dark, and device-matched themes, plus locale-aware date/time formats.
 - JSON backup export, import, and delete-data controls. On Android, export opens the system share sheet so you can save the file to a location you choose; in the browser, it downloads directly.
 
@@ -32,6 +33,7 @@ The browser preview cannot send Android notifications. Test reminder delivery on
 ## Privacy and limitations
 
 - Routine data, notes, and history are stored locally. There are no accounts, cloud sync, or analytics.
+- Barcode scanning requires camera permission. Camera images are used for scanning and are not saved or sent to a product database. Check package details yourself; the barcode does not identify a safe dose or instructions.
 - Keep exported backups private; they may contain sensitive personal notes. Android export uses a temporary app cache file shared through Android's share sheet.
 - The interface is currently English. Regional date/time formatting is available, but full translations and right-to-left UI localization are not yet included.
 - Cloud sync, caregiver sharing, widgets/wearable integrations, and signed Play Store distribution need additional infrastructure, testing, and release credentials.

@@ -11,6 +11,7 @@
     "android:sync": "npm run build && cap sync android"
   },
   "dependencies": {
+    "@capacitor-mlkit/barcode-scanning": "^7.1.0",
     "@capacitor/android": "^7.4.3",
     "@capacitor/core": "^7.4.3",
     "@capacitor/filesystem": "^7.1.9",
