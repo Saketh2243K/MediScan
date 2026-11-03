@@ -4,9 +4,9 @@ Mediketh helps you organize medicine and skincare routines, schedule daily remin
 
 ## Download the Android APK
 
-**[Open APK builds on GitHub Actions](https://github.com/Saketh2243K/MediScan/actions/workflows/android-debug.yml)**, select the latest successful run, and download the `mediketh-debug-apk` artifact. Extract it and install `app-debug.apk` on your Android phone.
+**[Download the latest Android APK](https://github.com/Saketh2243K/MediScan/releases/latest/download/app-debug.apk)** directly to your phone. If GitHub opens a release page instead, tap the `app-debug.apk` file under **Assets**.
 
-GitHub creates the APK automatically when changes are pushed to `main`. Build artifacts are temporary and may expire; run the workflow again if the latest APK is no longer available.
+After downloading, open the APK from your phone's Downloads and follow Android's prompts to install it. You may need to allow your browser or file manager to install unknown apps. GitHub publishes a new APK release whenever a build on `main` succeeds.
 
 ## Run the web version locally
 
