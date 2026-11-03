@@ -19,15 +19,17 @@ npm run dev
 
 ## Features
 
-- Add and remove medicine/skincare routine items.
-- Daily reminder times and Android local notification scheduling.
-- Explicit daily confirmation.
-- Basic recent history and progress.
+- Add, edit, and remove medicine/skincare routine items with validated reminder times.
+- Enable, refresh, and turn off daily Android notifications.
+- Confirm routine items with an option to undo an accidental confirmation.
+- Recent history that preserves the routine snapshot recorded with each day's first confirmation.
+- Local device storage; routine data is not synced to an account.
 
 ## Limitations
 
 - Data is stored locally; there is no account or cloud sync.
 - AI product recognition, photo matching, refill/expiry tracking, a monthly calendar, streaks, and full end-of-day missed-dose automation are not included.
 - Android notification permissions and exact alarm behaviour vary by Android version and device settings. Test reminders on your phone.
+- Reminder scheduling and delivery need verification on a physical Android device; browser preview cannot send Android notifications.
 - Mediketh records your own confirmation; a photo cannot establish that a medicine was taken or a skincare product was applied.
 - Do not take extra or double doses because an item was missed. Follow the medicine's label or prescriber's instructions.
