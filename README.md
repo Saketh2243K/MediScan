@@ -1,35 +1,38 @@
-# Mediketh - Medicine & Skincare Routine Companion
+# Mediketh — Medicine & Skincare Routine Companion
 
-Mediketh helps you organize medicine and skincare routines, schedule daily reminders, and keep a simple history of your confirmations. Your routine data is stored locally on your device.
+Mediketh is a local-first Android app for organizing medicine and skincare routines. It has separate Today, Routine, Calendar, and More screens, with daily tracking and reminders stored on your device.
 
-## Download the Android APK
+## Download the Android app
 
-**[Download the latest Android APK](https://github.com/Saketh2243K/MediScan/releases/latest/download/app-debug.apk)** directly to your phone. If GitHub opens a release page instead, tap the `app-debug.apk` file under **Assets**.
+**[Download the latest Mediketh APK](https://github.com/Saketh2243K/MediScan/releases/latest/download/app-debug.apk)** on your phone. Open the downloaded APK and follow Android's installation prompts. You may need to allow your browser or file manager to install unknown apps.
 
-After downloading, open the APK from your phone's Downloads and follow Android's prompts to install it. You may need to allow your browser or file manager to install unknown apps. GitHub publishes a new APK release whenever a build on `main` succeeds.
+GitHub builds a new APK after changes are pushed to `main`. This is a debug APK for testing, not a Play Store release.
 
-## Run the web version locally
+## Features
 
-From the project folder, run:
+- Separate Today, Routine, Calendar, and More screens with phone-friendly bottom navigation.
+- Multiple daily reminder times and selected weekdays for each routine item.
+- Confirm, undo, or record a skipped routine step; a skip is only a personal log and is not dosing advice.
+- Android reminders, including a 10-minute snooze when notifications are enabled.
+- Calendar, recent history, and a simple seven-day progress overview.
+- Private daily notes, saved only on this device.
+- Optional manual supply counts, low-supply thresholds, and expiry dates. Supply counts are not automatically reduced.
+- Light, dark, and device-matched themes, plus locale-aware date/time formats.
+- JSON backup export, import, and delete-data controls. On Android, export opens the system share sheet so you can save the file to a location you choose; in the browser, it downloads directly.
+
+## Run the web preview locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Features
+The browser preview cannot send Android notifications. Test reminder delivery on an Android device.
 
-- Add, edit, and remove medicine/skincare routine items with validated reminder times.
-- Enable, refresh, and turn off daily Android notifications.
-- Confirm routine items with an option to undo an accidental confirmation.
-- Recent history that preserves the routine snapshot recorded with each day's first confirmation.
-- Local device storage; routine data is not synced to an account.
+## Privacy and limitations
 
-## Limitations
-
-- Data is stored locally; there is no account or cloud sync.
-- AI product recognition, photo matching, refill/expiry tracking, a monthly calendar, streaks, and full end-of-day missed-dose automation are not included.
-- Android notification permissions and exact alarm behaviour vary by Android version and device settings. Test reminders on your phone.
-- Reminder scheduling and delivery need verification on a physical Android device; browser preview cannot send Android notifications.
-- Mediketh records your own confirmation; a photo cannot establish that a medicine was taken or a skincare product was applied.
-- Do not take extra or double doses because an item was missed. Follow the medicine's label or prescriber's instructions.
+- Routine data, notes, and history are stored locally. There are no accounts, cloud sync, or analytics.
+- Keep exported backups private; they may contain sensitive personal notes. Android export uses a temporary app cache file shared through Android's share sheet.
+- The interface is currently English. Regional date/time formatting is available, but full translations and right-to-left UI localization are not yet included.
+- Cloud sync, caregiver sharing, widgets/wearable integrations, and signed Play Store distribution need additional infrastructure, testing, and release credentials.
+- Mediketh is a personal tracker, not a medical record or a substitute for professional advice. Follow your medicine label or prescriber's instructions; do not take extra or double doses because an item was missed.
