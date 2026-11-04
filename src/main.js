@@ -21,6 +21,15 @@ const WEEKDAYS = [
 ];
 const DEFAULT_WEEK = WEEKDAYS.map(day => day.value);
 const MAX_PRODUCT_BARCODES = 20;
+const MAX_SCAN_TOKENS = 250;
+const MIN_ENROLL_PHOTOS = 3;
+const MAX_ENROLL_PHOTOS = 6;
+const ALARM_CHANNEL_ID = 'mediketh-alarm-v1';
+const ALARM_SOUND = 'mediketh_alarm.wav';
+const SCAN_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'use', 'only', 'not', 'may', 'are', 'your', 'you',
+  'can', 'all', 'net', 'wat', 'water', 'aqua', 'store', 'keep', 'out', 'reach', 'children', 'see', 'new'
+]);
 const barcodeProductCache = new Map();
 const ROUTES = ['today', 'routine', 'calendar', 'more', 'history', 'insights', 'notes', 'settings'];
 const ROUTE_INFO = {
@@ -137,6 +146,9 @@ function normalizeProduct(product, usedNotificationIds) {
     activeIngredient: typeof product.activeIngredient === 'string' ? product.activeIngredient.trim().slice(0, 100) : '',
     barcode: barcodes[0] || '',
     barcodes,
+    scanTokens: Array.isArray(product.scanTokens)
+      ? [...new Set(product.scanTokens.filter(word => typeof word === 'string' && /^[a-z0-9]{3,24}$/.test(word)))].slice(0, MAX_SCAN_TOKENS)
+      : [],
     note: typeof product.note === 'string' ? product.note.slice(0, 1000) : ''
   };
 }
@@ -362,6 +374,7 @@ function renderToday() {
   screen.querySelectorAll('[data-confirm-dose]').forEach(button => button.addEventListener('click', () => confirmDoseAction(button.dataset.product, button.dataset.time, day, 'taken')));
   screen.querySelectorAll('[data-skip-dose]').forEach(button => button.addEventListener('click', () => confirmDoseAction(button.dataset.product, button.dataset.time, day, 'skipped')));
   screen.querySelectorAll('[data-scan-dose]').forEach(button => button.addEventListener('click', () => scanDoseProduct(button.dataset.product, button.dataset.time, day)));
+  screen.querySelectorAll('[data-scan-complete]').forEach(button => button.addEventListener('click', () => scanToComplete(button.dataset.product, button.dataset.time, day)));
   screen.querySelectorAll('[data-snooze-dose]').forEach(button => button.addEventListener('click', () => snoozeDose(button.dataset.product, button.dataset.time, day)));
   screen.querySelector('[data-route="routine"]')?.addEventListener('click', () => navigate('routine'));
   screen.querySelector('[data-action="add"]')?.addEventListener('click', () => openProductForm());
@@ -378,7 +391,7 @@ function renderDoseCard(product, time, day, savedKey) {
   return `<article class="dose-card ${status === 'taken' ? 'dose-done' : ''}">
     <div class="dose-time"><span>${escapeHtml(formatTime(time))}</span><span class="dose-dot"></span></div>
     <div class="dose-main"><div class="dose-icon ${product.kind === 'Skincare' ? 'skin' : ''}" aria-hidden="true">${product.kind === 'Skincare' ? '✧' : '✚'}</div><div class="dose-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.kind)}${stateLabel ? ` · ${escapeHtml(stateLabel)}` : ''}</span></div></div>
-    ${isToday ? `<div class="dose-actions">${status ? `<button class="soft-button" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">${status === 'taken' ? 'Undo' : 'Mark taken'}</button>` : `<button class="primary-button dose-taken" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">✓ Taken</button><button class="soft-button" data-scan-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">Scan match</button>${state.remindersEnabled && Capacitor.isNativePlatform() ? `<button class="icon-button" data-snooze-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Snooze reminder for ${escapeHtml(product.name)}">＋10m</button>` : ''}<button class="icon-button" data-skip-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Skip ${escapeHtml(product.name)} today">Skip</button>`}</div>` : ''}</article>`;
+    ${isToday ? `<div class="dose-actions">${status ? `<button class="soft-button" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">${status === 'taken' ? 'Undo' : 'Mark taken'}</button>` : `<button class="primary-button dose-taken" data-confirm-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">✓ Taken</button>${product.scanTokens?.length ? `<button class="primary-button" data-scan-complete data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">Scan to complete</button>` : ''}<button class="soft-button" data-scan-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}">Scan match</button>${state.remindersEnabled && Capacitor.isNativePlatform() ? `<button class="icon-button" data-snooze-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Snooze reminder for ${escapeHtml(product.name)}">＋10m</button>` : ''}<button class="icon-button" data-skip-dose data-product="${escapeHtml(product.id)}" data-time="${escapeHtml(time)}" aria-label="Skip ${escapeHtml(product.name)} today">Skip</button>`}</div>` : ''}</article>`;
 }
 
 function renderRoutine() {
@@ -403,6 +416,7 @@ function renderProductCard(product) {
     <h3>${escapeHtml(product.name)}</h3><p class="product-schedule">${escapeHtml(times)} <span>·</span> ${escapeHtml(days)}</p>
     ${product.activeIngredient ? `<p class="product-barcode">Routine identity · ${escapeHtml(product.activeIngredient)}</p>` : ''}
     ${product.barcodes.length ? `<p class="product-barcode">${product.barcodes.length} saved package barcode${product.barcodes.length === 1 ? '' : 's'}</p>` : ''}
+    ${product.scanTokens.length ? '<p class="product-barcode">Scan to complete is set up</p>' : ''}
     ${(lowStock || expiring) ? `<div class="stock-alert">${lowStock ? `Low supply: ${product.stock} left` : ''}${lowStock && expiring ? ' · ' : ''}${expiring ? `Expires ${escapeHtml(product.expiryDate)}` : ''}</div>` : ''}
     <div class="product-meta">${product.stock !== null ? `<span>▣ ${product.stock} in supply</span>` : '<span>Local reminders</span>'}<div><button class="small-action" data-stock="${escapeHtml(product.id)}">Update supply</button><button class="small-action" data-edit-product="${escapeHtml(product.id)}">Edit</button></div></div>
   </article>`;
@@ -606,6 +620,7 @@ function openDialog({ title, description = '', content, actions, onSubmit, label
 function openProductForm(productId) {
   const existing = state.products.find(product => product.id === productId);
   const days = existing?.days || DEFAULT_WEEK;
+  let scanTokens = [...(existing?.scanTokens || [])];
   const dialog = openDialog({
     title: existing ? 'Edit routine item' : 'Add to your routine',
     description: 'Set reminder times and days based on your label or care instructions.',
@@ -614,6 +629,7 @@ function openProductForm(productId) {
       <label for="routine-ingredient">Routine identity / active ingredient (optional)</label><input id="routine-ingredient" name="activeIngredient" maxlength="100" value="${escapeHtml(existing?.activeIngredient || '')}" placeholder="For example, Vitamin C"><small class="field-help">Use the ingredient printed on your label. This helps suggest a match when the brand changes.</small>
       <label for="routine-barcode">Package barcodes (optional)</label><div class="barcode-entry"><input id="routine-barcode" name="barcodes" maxlength="1400" autocomplete="off" value="${escapeHtml((existing?.barcodes || []).join(', '))}" aria-describedby="barcode-help"><button class="soft-button" type="button" data-scan-barcode>Scan</button></div><small id="barcode-help" class="field-help">Separate codes with commas. A lookup sends only the barcode to Open Food Facts; label photos stay on this device. Catalog details may be incomplete or wrong.</small>
       <div class="product-lookup-result" data-product-lookup aria-live="polite"></div><button class="soft-button label-photo-button" type="button" data-read-label>Read package text (up to 3 photos)</button><small class="field-help">Photos are processed on-device and discarded; verify all recognized text yourself.</small><textarea id="package-text" class="package-text" maxlength="3000" placeholder="On-device label text will appear here; it is not saved." aria-label="Recognized package label text"></textarea>
+      <div class="scan-setup"><button class="soft-button" type="button" data-enroll>Teach Mediketh this item (${MIN_ENROLL_PHOTOS}–${MAX_ENROLL_PHOTOS} photos)</button><small class="field-help">Photograph the bottle or box from different sides. Later you can scan it to mark the step complete. Only the label words are remembered, never the photos.</small><p class="product-lookup-result" data-enroll-status aria-live="polite">${scanTokens.length ? `${scanTokens.length} label words remembered.` : 'Not set up yet.'}</p></div>
       <label for="routine-kind">Type</label><select id="routine-kind" name="kind"><option ${existing?.kind !== 'Skincare' ? 'selected' : ''}>Medicine</option><option ${existing?.kind === 'Skincare' ? 'selected' : ''}>Skincare</option></select>
       <label for="routine-times">Daily reminder times</label><input id="routine-times" name="times" type="text" placeholder="08:00, 20:00" value="${escapeHtml((existing?.times || ['08:00']).join(', '))}" aria-describedby="times-help"><small id="times-help" class="field-help">Use 24-hour times separated by commas, such as 08:00, 14:30.</small>
       <fieldset class="weekday-field"><legend>Repeat on</legend><div class="weekday-picker">${WEEKDAYS.map(day => `<label><input type="checkbox" name="days" value="${day.value}" ${days.includes(day.value) ? 'checked' : ''}><span>${escapeHtml(formatWeekday(day.value))}</span></label>`).join('')}</div></fieldset>
@@ -664,6 +680,7 @@ function openProductForm(productId) {
         activeIngredient: String(values.get('activeIngredient') || '').trim(),
         barcode: barcodes[0] || '',
         barcodes,
+        scanTokens: scanTokens.slice(0, MAX_SCAN_TOKENS),
         note: existing?.note || ''
       };
       next.notificationIds = buildNotificationIds(next, state.products);
@@ -689,6 +706,10 @@ function openProductForm(productId) {
     dialog.querySelector('#package-text').value = text;
     const lookup = dialog.querySelector('[data-product-lookup]');
     lookup.textContent = 'Text recognized on-device. Review the label and enter the active ingredient yourself; OCR does not identify a safe dose.';
+  }));
+  dialog.querySelector('[data-enroll]').addEventListener('click', () => enrollPackageLabel(words => {
+    scanTokens = words;
+    dialog.querySelector('[data-enroll-status]').textContent = `${words.length} label words remembered. Save the item to keep them.`;
   }));
   dialog.querySelector('#routine-name').focus();
 
@@ -839,6 +860,157 @@ async function showBarcodeLookup(barcode, resultElement, errorElement, activeIng
     errorElement.textContent = `Product lookup failed: ${reason}`;
     return { found: false, error: reason };
   }
+}
+
+// ---- Scan to complete: on-device label-text recognition --------------------------------------
+// While setting up an item the user photographs the package from several sides. ML Kit reads the
+// text on the device and only the distinct words are kept (never the photos). Later, a fresh photo
+// is read the same way and compared with the remembered words.
+
+function tokenizeLabelText(text) {
+  const words = String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ');
+  return [...new Set(words.filter(word => word.length >= 3 && word.length <= 24 && !/^\d+$/.test(word) && !SCAN_STOP_WORDS.has(word)))];
+}
+
+// Equal words match; words of 5+ letters may differ by one character (a typical OCR misread).
+function wordsClose(a, b) {
+  if (a === b) return true;
+  if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++;
+    else if (a.length < b.length) j++;
+    else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
+function countScanMatches(known, live) {
+  return live.filter(word => known.some(item => wordsClose(word, item))).length;
+}
+
+// Recognized when at least 3 words match, at least 40% of the readable words in the scan belong to
+// this item, and no other taught item matches better.
+function matchScan(product, text) {
+  const live = tokenizeLabelText(text);
+  const matched = countScanMatches(product.scanTokens || [], live);
+  const rival = state.products.some(other => other.id !== product.id && countScanMatches(other.scanTokens || [], live) > matched);
+  return { liveWords: live.length, matched, recognized: matched >= 3 && matched / live.length >= 0.4 && !rival };
+}
+
+async function capturePackageText() {
+  if (!Capacitor.isNativePlatform()) throw new Error('Photo scanning is available in the Android app.');
+  const photo = await Camera.getPhoto({
+    quality: 75,
+    width: 1400,
+    height: 1400,
+    source: CameraSource.Camera,
+    resultType: CameraResultType.Base64,
+    saveToGallery: false
+  });
+  if (!photo.base64String) throw new Error('The camera did not return an image.');
+  const result = await CapacitorPluginMlKitTextRecognition.detectText({ base64Image: photo.base64String });
+  return typeof result?.text === 'string' ? result.text : '';
+}
+
+function enrollPackageLabel(onSaved) {
+  let photoCount = 0;
+  let words = [];
+  const enrollDialog = openDialog({
+    title: 'Teach Mediketh this item',
+    description: `Take ${MIN_ENROLL_PHOTOS} to ${MAX_ENROLL_PHOTOS} photos of the bottle or box from different sides, showing the brand and label text. Text is read on this device; photos are not saved or uploaded, and only the words are remembered.`,
+    content: '<p class="photo-scan-status" data-enroll-progress>No photos yet. Start with the front of the package.</p><p class="form-error" role="alert"></p>',
+    actions: '<button class="soft-button" type="button" data-cancel>Cancel</button><button class="soft-button" type="button" data-capture>Take photo</button><button class="primary-button" type="button" data-save-enroll disabled>Save</button>'
+  });
+  const progress = enrollDialog.querySelector('[data-enroll-progress]');
+  const error = enrollDialog.querySelector('.form-error');
+  const captureButton = enrollDialog.querySelector('[data-capture]');
+  const saveButton = enrollDialog.querySelector('[data-save-enroll]');
+  enrollDialog.querySelector('[data-cancel]').addEventListener('click', () => enrollDialog.close());
+  saveButton.addEventListener('click', () => {
+    enrollDialog.close();
+    onSaved(words);
+  });
+  captureButton.addEventListener('click', async () => {
+    if (photoCount >= MAX_ENROLL_PHOTOS) return;
+    captureButton.disabled = true;
+    error.textContent = '';
+    try {
+      const found = tokenizeLabelText(await capturePackageText());
+      const before = words.length;
+      words = [...new Set([...words, ...found])].slice(0, MAX_SCAN_TOKENS);
+      photoCount++;
+      const added = words.length - before;
+      progress.textContent = `${photoCount} of ${MAX_ENROLL_PHOTOS} photos taken · ${words.length} label words found${added < 2 ? '. Little new text on this side; try another angle with more text.' : '.'}`;
+      saveButton.disabled = photoCount < MIN_ENROLL_PHOTOS || words.length < 5;
+      if (photoCount >= MIN_ENROLL_PHOTOS && words.length < 5) error.textContent = 'Very little readable text so far. Photograph the side with the brand name and ingredients, in good light.';
+      captureButton.textContent = photoCount >= MAX_ENROLL_PHOTOS ? 'Photo limit reached' : `Take another photo (${photoCount}/${MAX_ENROLL_PHOTOS})`;
+      captureButton.disabled = photoCount >= MAX_ENROLL_PHOTOS;
+    } catch (captureError) {
+      error.textContent = `Photo could not be read: ${captureError.message}`;
+      captureButton.disabled = false;
+    }
+  });
+}
+
+// Skincare: a recognized item completes the step. Medicine: a recognized package only opens the
+// usual "did you actually take it?" confirmation, because a package in view does not prove a dose.
+function scanToComplete(productId, time, day) {
+  if (day !== todayKey()) return;
+  const product = state.products.find(item => item.id === productId);
+  if (!product) {
+    pushToast('This routine item is no longer available.', 'error');
+    return;
+  }
+  if (!product.scanTokens?.length) {
+    pushToast('Teach Mediketh this item first: edit it and add label photos.', 'info');
+    return;
+  }
+  if (doseStatus(productId, time, day)) {
+    pushToast('This step is already recorded.', 'info');
+    return;
+  }
+  const dialog = openDialog({
+    title: `Scan ${escapeHtml(product.name)}`,
+    description: 'Use the item first, then photograph its label. Text is read on this device and the photo is not saved.',
+    content: '<p class="product-lookup-result" data-scan-result aria-live="polite">Hold the label in good light so the text fills the frame.</p><p class="form-error" role="alert"></p>',
+    actions: '<button class="soft-button" type="button" data-cancel>Cancel</button><button class="primary-button" type="button" data-take-scan>Take photo</button>'
+  });
+  const result = dialog.querySelector('[data-scan-result]');
+  const error = dialog.querySelector('.form-error');
+  const takeButton = dialog.querySelector('[data-take-scan]');
+  dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+  takeButton.addEventListener('click', async () => {
+    takeButton.disabled = true;
+    error.textContent = '';
+    result.textContent = 'Reading the label…';
+    try {
+      const match = matchScan(product, await capturePackageText());
+      if (!match.recognized) {
+        result.textContent = match.liveWords
+          ? `Not recognized (${match.matched} of ${match.liveWords} words matched). Try a side you photographed during setup.`
+          : 'No readable text found. Try again in better light.';
+        takeButton.disabled = false;
+        return;
+      }
+      dialog.close();
+      if (product.kind === 'Skincare') {
+        await setDoseStatus(productId, time, 'taken', day);
+        pushToast(`Task completed: ${product.name} recognized.`);
+      } else {
+        pushToast('Item recognized. Please confirm that you actually took it.', 'info');
+        confirmDoseAction(productId, time, day, 'taken');
+      }
+    } catch (scanError) {
+      error.textContent = `Scan failed: ${scanError.message}`;
+      result.textContent = 'Try again, or use the Taken button to confirm manually.';
+      takeButton.disabled = false;
+    }
+  });
 }
 
 async function readPackageLabel(onRecognizedText) {
@@ -1103,6 +1275,7 @@ async function snoozeDose(productId, time, day) {
         id: notificationId,
         title: 'Mediketh reminder',
         body: `Reminder: ${product.name}`,
+        ...alarmFields(),
         schedule: { at: until },
         extra: { mediketh: true, day, key }
       }]
@@ -1312,6 +1485,7 @@ function renderDoseNotifications() {
           id,
           title: 'Mediketh reminder',
           body: `Time for your routine: ${product.name}`,
+          ...alarmFields(),
           schedule: { on: { weekday: day === 7 ? 1 : day + 1, hour, minute }, allowWhileIdle: true },
           extra: { mediketh: true, productId: product.id, time, weekday: day }
         });
@@ -1326,6 +1500,7 @@ function renderDoseNotifications() {
           id: notificationId,
           title: 'Mediketh reminder',
           body: 'Your snoozed routine reminder.',
+          ...alarmFields(),
           schedule: { at: new Date(record.snoozedUntil) },
           extra: { mediketh: true, day, key }
         });
@@ -1341,6 +1516,34 @@ async function cancelNotifications(ids = []) {
   const owned = pending.notifications.filter(notification => notification.title === 'Mediketh reminder').map(notification => notification.id);
   const allIds = [...new Set([...owned, ...ids])];
   if (allIds.length) await LocalNotifications.cancel({ notifications: allIds.map(id => ({ id })) });
+}
+
+let alarmChannelReady = false;
+
+// Android 8+ plays notification sounds from a channel, and a notification sent to a channel that
+// does not exist never fires. So channelId/sound are only attached once the channel was created;
+// otherwise reminders fall back to the default sound instead of silently not appearing.
+async function ensureAlarmChannel() {
+  if (!Capacitor.isNativePlatform()) return false;
+  try {
+    await LocalNotifications.createChannel({
+      id: ALARM_CHANNEL_ID,
+      name: 'Routine reminders (30-second alarm)',
+      description: 'Plays a 30-second alarm sound when a routine step is due.',
+      sound: ALARM_SOUND,
+      importance: 5,
+      visibility: 1,
+      vibration: true
+    });
+    alarmChannelReady = true;
+  } catch {
+    alarmChannelReady = false;
+  }
+  return alarmChannelReady;
+}
+
+function alarmFields() {
+  return alarmChannelReady ? { channelId: ALARM_CHANNEL_ID, sound: ALARM_SOUND } : {};
 }
 
 // Cancels only the given notification ids. Unlike cancelNotifications(), it leaves
@@ -1362,6 +1565,7 @@ async function refreshNotificationsAfterSave() {
 
 async function syncNotifications() {
   const run = async () => {
+    await ensureAlarmChannel();
     const notifications = renderDoseNotifications();
     await cancelNotifications(notifications.map(notification => notification.id));
     if (notifications.length) await LocalNotifications.schedule({ notifications });
@@ -1423,6 +1627,17 @@ function start() {
     if (currentRoute === 'calendar' && selectedDate === nowKey) visibleMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     render();
   });
+  if (Capacitor.isNativePlatform()) {
+    void ensureAlarmChannel();
+    // Tapping a reminder opens Today; if that step uses scan-to-complete, open the scan dialog.
+    LocalNotifications.addListener('localNotificationActionPerformed', event => {
+      const extra = event?.notification?.extra;
+      if (!extra?.mediketh) return;
+      navigate('today');
+      const product = state.products.find(item => item.id === extra.productId);
+      if (product?.scanTokens?.length && extra.time) scanToComplete(product.id, extra.time, todayKey());
+    }).catch(() => {});
+  }
   render();
   if (Capacitor.isNativePlatform() && state.needsLegacyNotificationCleanup) {
     cancelNotifications()
