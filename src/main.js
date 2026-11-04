@@ -50,6 +50,7 @@ let notificationSync = Promise.resolve();
 let reminderSyncWarning = '';
 let currentRoute = 'today';
 let selectedDate = dateKey(new Date());
+let lastSeenDay = selectedDate;
 let visibleMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let toastTimer;
 let state = loadState();
@@ -240,6 +241,10 @@ function formatTime(time) {
   return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(new Date(2000, 0, 1, hour, minute));
 }
 
+function formatClock(date) {
+  return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
 function doseKey(productId, time) {
   return `${productId}@${time}`;
 }
@@ -367,7 +372,9 @@ function renderDoseCard(product, time, day, savedKey) {
   const record = dayLog(day)[key] || {};
   const status = record.status || '';
   const isToday = day === todayKey();
-  const stateLabel = status === 'taken' ? 'Completed' : status === 'skipped' ? 'Skipped' : record.snoozedUntil ? `Snoozed until ${formatTime(record.snoozedUntil.slice(11, 16))}` : '';
+  const snoozeEnd = record.snoozedUntil ? new Date(record.snoozedUntil) : null;
+  const snoozeActive = snoozeEnd && !Number.isNaN(snoozeEnd.getTime()) && snoozeEnd > new Date();
+  const stateLabel = status === 'taken' ? 'Completed' : status === 'skipped' ? 'Skipped' : snoozeActive ? `Snoozed until ${formatClock(snoozeEnd)}` : '';
   return `<article class="dose-card ${status === 'taken' ? 'dose-done' : ''}">
     <div class="dose-time"><span>${escapeHtml(formatTime(time))}</span><span class="dose-dot"></span></div>
     <div class="dose-main"><div class="dose-icon ${product.kind === 'Skincare' ? 'skin' : ''}" aria-hidden="true">${product.kind === 'Skincare' ? '✧' : '✚'}</div><div class="dose-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.kind)}${stateLabel ? ` · ${escapeHtml(stateLabel)}` : ''}</span></div></div>
@@ -1067,7 +1074,7 @@ async function setDoseStatus(productId, time, status, day) {
     save();
     if (Capacitor.isNativePlatform()) {
       try {
-        await cancelNotifications([snoozeNotificationId(day, key)]);
+        await cancelNotificationIds([snoozeNotificationId(day, key)]);
       } catch (error) {
         pushToast(`Status saved, but the snoozed notification could not be cleared: ${error.message}`, 'error');
       }
@@ -1109,7 +1116,7 @@ async function snoozeDose(productId, time, day) {
       pushToast('Reminder snoozed for 10 minutes.');
     } catch (error) {
       state.logs = previous;
-      await cancelNotifications([notificationId]);
+      await cancelNotificationIds([notificationId]);
       throw error;
     }
   } catch (error) {
@@ -1336,6 +1343,13 @@ async function cancelNotifications(ids = []) {
   if (allIds.length) await LocalNotifications.cancel({ notifications: allIds.map(id => ({ id })) });
 }
 
+// Cancels only the given notification ids. Unlike cancelNotifications(), it leaves
+// the recurring weekly reminders alone, so it is safe to use without a re-sync.
+async function cancelNotificationIds(ids = []) {
+  const unique = [...new Set(ids)];
+  if (unique.length) await LocalNotifications.cancel({ notifications: unique.map(id => ({ id })) });
+}
+
 async function refreshNotificationsAfterSave() {
   try {
     await syncNotifications();
@@ -1396,6 +1410,17 @@ function start() {
   window.addEventListener('popstate', event => {
     currentRoute = ROUTES.includes(event.state?.route) ? event.state.route : ROUTES.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'today';
     selectedDate = event.state?.date || todayKey();
+    render();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const nowKey = todayKey();
+    if (nowKey === lastSeenDay) return;
+    // A new day started while the app was in the background: move "today" forward.
+    if (selectedDate === lastSeenDay) selectedDate = nowKey;
+    lastSeenDay = nowKey;
+    const now = new Date();
+    if (currentRoute === 'calendar' && selectedDate === nowKey) visibleMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     render();
   });
   render();
