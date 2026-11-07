@@ -35,6 +35,17 @@ jobs:
           java-version: '21'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+      - name: Use a stable signing key if one is configured
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.MEDIKETH_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            mkdir -p "$HOME/.android"
+            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "Using the stable signing key from the MEDIKETH_DEBUG_KEYSTORE_BASE64 secret."
+          else
+            echo "No signing secret is set, so this build uses a temporary key. Installing it over an older build may fail."
+          fi
       - name: Build debug APK
         run: |
           cd android
@@ -47,6 +58,8 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Publish APK download
+        # Only main publishes the public "latest" download. Other branches just keep the artifact above.
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
