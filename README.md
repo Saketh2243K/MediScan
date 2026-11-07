@@ -16,11 +16,17 @@ GitHub builds a new APK after changes are pushed to `main`. This is a debug APK 
 - Android reminders, including a 10-minute snooze when notifications are enabled.
 - Calendar, recent history, and a simple seven-day progress overview.
 - Private daily notes, saved only on this device.
-- Optional manual supply counts, low-supply thresholds, and expiry dates. Supply counts are not automatically reduced.
+- Optional supply counts, low-supply thresholds, and expiry dates. A count only goes down automatically for items where you turn on "Reduce supply by 1 each time I mark this step taken"; undoing a confirmation gives the unit back.
 - Scan package barcodes for a possible Open Food Facts food-product listing, or manually add a barcode. A user-approved product match can link multiple brand codes to the same routine item; this is not a medicine verification service.
 - Capture up to three package-label photos for on-device ML Kit text recognition; photos are discarded and never uploaded. Recognized text and product-catalog details are suggestions to verify against the label.
 - **Scan to complete:** while setting up an item, take 3-6 photos of the bottle or box. ML Kit reads the label text on the device and only the words are remembered, never the photos. When the reminder fires, use the item, then tap "Scan to complete" and photograph the label; if it is recognized, a skincare step is marked complete. For medicines a recognized package only opens the usual "did you actually take it?" confirmation, because a package in view does not prove a dose. Recognition is text matching, so it needs a readable label and decent light.
 - **30-second alarm:** reminders play a 30-second alarm sound that then stops by itself, using a dedicated Android notification channel. Tapping a reminder opens the app (and the scan dialog for items set up for scanning). Android controls the final volume and Do Not Disturb behavior.
+- **Reminder buttons:** each reminder has "I took it", "Snooze 10 min" and "Skip". Taken and Skip open the usual confirmation question, so a stray tap never records a dose by itself.
+- **Evening check-in (optional):** one nightly reminder at a time you choose, to open the app and mark anything you missed. It appears every evening, even when you are caught up.
+- **Time pickers** for reminder times (up to 8 per day) instead of typing them.
+- **Streaks:** current and best run of days where every scheduled step was confirmed. A skipped or forgotten day ends the run; days with nothing scheduled do not.
+- **Backup reminder:** Settings shows when you last exported a backup, and More warns you after 14 days without one, because your data lives only on this phone.
+- **Reminder check** in Settings: tells you if notifications are blocked or exact alarms are off, and how to stop battery saver from delaying reminders.
 - Light, dark, high-contrast dark, and device-matched themes, plus locale-aware date/time formats.
 - JSON backup export, import, and delete-data controls. On Android, export opens the system share sheet so you can save the file to a location you choose; in the browser, it downloads directly.
 
@@ -32,6 +38,12 @@ npm run dev
 ```
 
 The browser preview cannot send Android notifications. Test reminder delivery on an Android device.
+
+## Keeping your data when you update the app
+
+Android will not install an update over an app that was signed with a different key. Without a stored key, every GitHub build gets a new temporary one, so each update would mean uninstalling first and losing your data. To avoid that, create a signing key once and add it to GitHub as a secret named `MEDIKETH_DEBUG_KEYSTORE_BASE64` (repository Settings > Secrets and variables > Actions); builds then use it automatically. Export a backup before the first build that uses it, because that first install still has to replace an app signed with the old temporary key.
+
+Only builds from `main` publish the public download link. A build you start by hand from another branch only attaches its APK to that workflow run (Actions tab > the run > Artifacts), so you can test it without changing the download link.
 
 ## Privacy and limitations
 

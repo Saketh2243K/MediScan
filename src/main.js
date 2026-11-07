@@ -22,10 +22,13 @@ const WEEKDAYS = [
 const DEFAULT_WEEK = WEEKDAYS.map(day => day.value);
 const MAX_PRODUCT_BARCODES = 20;
 const MAX_SCAN_TOKENS = 250;
+const MAX_REMINDER_TIMES = 8;
+const BACKUP_REMINDER_DAYS = 14;
 const MIN_ENROLL_PHOTOS = 3;
 const MAX_ENROLL_PHOTOS = 6;
 const ALARM_CHANNEL_ID = 'mediketh-alarm-v1';
-const ALARM_SOUND = 'mediketh_alarm.wav';
+const ALARM_SOUND = 'mediketh_alarm'; // res/raw/mediketh_alarm.wav, referenced without extension
+const DOSE_ACTION_TYPE = 'MEDIKETH_DOSE';
 const SCAN_STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'from', 'this', 'that', 'use', 'only', 'not', 'may', 'are', 'your', 'you',
   'can', 'all', 'net', 'wat', 'water', 'aqua', 'store', 'keep', 'out', 'reach', 'children', 'see', 'new'
@@ -47,11 +50,13 @@ const DEFAULT_STATE = {
   logs: {},
   remindersEnabled: false,
   needsLegacyNotificationCleanup: false,
+  eveningNudge: { enabled: false, time: '21:00' },
+  lastBackupAt: '',
   preferences: { theme: 'system', locale: 'system' }
 };
 
 function emptyState() {
-  return { ...DEFAULT_STATE, products: [], logs: {}, preferences: { ...DEFAULT_STATE.preferences } };
+  return { ...DEFAULT_STATE, products: [], logs: {}, eveningNudge: { ...DEFAULT_STATE.eveningNudge }, preferences: { ...DEFAULT_STATE.preferences } };
 }
 
 let storageWarning = '';
@@ -146,6 +151,7 @@ function normalizeProduct(product, usedNotificationIds) {
     activeIngredient: typeof product.activeIngredient === 'string' ? product.activeIngredient.trim().slice(0, 100) : '',
     barcode: barcodes[0] || '',
     barcodes,
+    autoSupply: product.autoSupply === true,
     scanTokens: Array.isArray(product.scanTokens)
       ? [...new Set(product.scanTokens.filter(word => typeof word === 'string' && /^[a-z0-9]{3,24}$/.test(word)))].slice(0, MAX_SCAN_TOKENS)
       : [],
@@ -173,7 +179,7 @@ function normalizeLogs(rawLogs, products) {
           key: doseKey(entry.id, entry.time)
         }));
       } else if (key.includes('@') && record && typeof record === 'object' && ['taken', 'skipped'].includes(record.status)) {
-        log[key] = { status: record.status, at: typeof record.at === 'string' ? record.at : '' };
+        log[key] = { status: record.status, at: typeof record.at === 'string' ? record.at : '', ...(record.status === 'taken' && record.supplyUsed === true ? { supplyUsed: true } : {}) };
       } else if (key.includes('@') && record && typeof record === 'object' && typeof record.snoozedUntil === 'string' && Number.isFinite(Date.parse(record.snoozedUntil))) {
         log[key] = { snoozedUntil: record.snoozedUntil };
       }
@@ -188,6 +194,13 @@ function normalizeLogs(rawLogs, products) {
     if (Object.keys(log).length) logs[day] = log;
   }
   return logs;
+}
+
+function normalizeNudge(raw) {
+  return {
+    enabled: raw?.enabled === true,
+    time: typeof raw?.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw.time) ? raw.time : '21:00'
+  };
 }
 
 function normalizePreferences(raw) {
@@ -215,6 +228,8 @@ function loadState() {
       products,
       logs,
       preferences: normalizePreferences(saved.preferences),
+      eveningNudge: normalizeNudge(saved.eveningNudge),
+      lastBackupAt: typeof saved.lastBackupAt === 'string' && Number.isFinite(Date.parse(saved.lastBackupAt)) ? saved.lastBackupAt : '',
       remindersEnabled: saved.remindersEnabled === true,
       needsLegacyNotificationCleanup: saved.remindersEnabled === undefined
     };
@@ -494,6 +509,7 @@ function renderMore() {
       <button class="more-card" data-open="notes"><span class="more-card-icon amber">✎</span><span><strong>Daily notes</strong><small>Private, on this device</small></span><i>›</i></button>
       <button class="more-card" data-open="settings"><span class="more-card-icon blue">⚙</span><span><strong>Settings & privacy</strong><small>Theme, regional formats, your data</small></span><i>›</i></button>
     </div>
+    ${backupNudgeHtml()}
     <div class="privacy-card"><span aria-hidden="true">⌑</span><div><strong>Your routine stays on this device</strong><p>There is no account or cloud sync. Export a backup from Settings if you want to keep a copy.</p></div></div>`;
   screen.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.open)));
 }
@@ -513,6 +529,38 @@ function renderHistory() {
   }).join('')}</div>` : '<div class="empty-state card-surface"><span class="empty-icon">◴</span><h3>History starts with a confirmation</h3><p>When you record a routine step, you can review it here.</p><button class="primary-button" data-open-today>Go to today</button></div>';
   screen.querySelectorAll('[data-history-day]').forEach(button => button.addEventListener('click', () => navigate('today', { date: button.dataset.historyDay })));
   screen.querySelector('[data-open-today]')?.addEventListener('click', () => navigate('today'));
+}
+
+// A "streak" is a run of consecutive scheduled days on which every step was confirmed as taken.
+// Days with nothing scheduled neither extend nor break it. Past days without a saved snapshot are
+// judged against the current schedule, but only from the first day anything was confirmed, so a
+// forgotten day (no record at all) breaks the streak instead of silently being skipped.
+function streakInfo() {
+  const today = todayKey();
+  const firstTaken = Object.keys(state.logs)
+    .filter(day => Object.entries(state.logs[day] || {}).some(([key, record]) => !key.startsWith('_') && record?.status === 'taken'))
+    .sort()[0];
+  if (!firstTaken) return { current: 0, best: 0 };
+  const plannedFor = day => {
+    const snapshot = daySnapshot(day);
+    if (snapshot.length || day >= today) return snapshot;
+    return state.products.filter(product => scheduleApplies(product, day)).flatMap(product => product.times.map(time => ({ key: doseKey(product.id, time) })));
+  };
+  const cursor = parseDate(firstTaken);
+  let run = 0;
+  let best = 0;
+  for (let step = 0; step < 2000; step++) {
+    const day = dateKey(cursor);
+    if (day > today) break;
+    const planned = plannedFor(day);
+    if (planned.length) {
+      const complete = planned.every(entry => dayLog(day)[entry.key || doseKey(entry.id, entry.time)]?.status === 'taken');
+      if (complete) { run++; best = Math.max(best, run); }
+      else if (day !== today) run = 0;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return { current: run, best };
 }
 
 function renderInsights() {
@@ -536,9 +584,10 @@ function renderInsights() {
   }).join('');
   const activeDays = days.filter(day => Object.entries(dayLog(day)).some(([key, record]) => !key.startsWith('_') && record?.status === 'taken')).length;
   const percentage = planned ? Math.round(taken / planned * 100) : 0;
+  const streak = streakInfo();
   screen.innerHTML = `
     <div class="insight-hero"><span class="section-kicker">LAST 7 DAYS</span><h2>${percentage}%</h2><p>of scheduled routine steps confirmed</p><div class="weekly-chart">${bars}</div></div>
-    <div class="summary-grid"><div class="metric-card"><span class="metric-icon">✓</span><strong>${taken}</strong><small>Confirmed steps</small></div><div class="metric-card"><span class="metric-icon">◷</span><strong>${activeDays}/7</strong><small>Active days</small></div></div>
+    <div class="summary-grid"><div class="metric-card"><span class="metric-icon">✓</span><strong>${taken}</strong><small>Confirmed steps</small></div><div class="metric-card"><span class="metric-icon">◷</span><strong>${activeDays}/7</strong><small>Active days</small></div><div class="metric-card"><span class="metric-icon">★</span><strong>${streak.current}</strong><small>Day streak</small></div><div class="metric-card"><span class="metric-icon">♛</span><strong>${streak.best}</strong><small>Best streak</small></div></div>
     <div class="help-card"><span aria-hidden="true">✦</span><p>Progress is a reflection tool, not a judgment. A skipped routine does not mean you should take an extra dose.</p></div>`;
 }
 
@@ -569,9 +618,12 @@ function renderSettings() {
     <section class="settings-section"><span class="section-kicker">REMINDERS</span>
       <div class="reminder-setting"><div><strong>${state.remindersEnabled ? 'Reminders are on' : 'Reminders are off'}</strong><small>Notifications are scheduled on this device only.</small></div><button class="${state.remindersEnabled ? 'soft-button' : 'primary-button'}" data-toggle-reminders>${state.remindersEnabled ? 'Refresh' : 'Enable'}</button></div>
       ${reminderSyncWarning ? `<p class="form-error">${escapeHtml(reminderSyncWarning)}</p>` : ''}
+      <label class="setting-row"><span><strong>Evening check-in</strong><small>A nightly reminder to open Mediketh and mark anything you missed. It appears every evening, even when you are all caught up.</small></span><input id="nudge-toggle" type="checkbox" ${state.eveningNudge.enabled ? 'checked' : ''}></label>
+      <label class="setting-row"><span><strong>Check-in time</strong><small>${state.remindersEnabled ? 'Applies right away.' : 'Turn on reminders above to schedule it.'}</small></span><input id="nudge-time" type="time" value="${escapeHtml(state.eveningNudge.time)}"></label>
+      <div class="reminder-setting"><div><strong>Reminder reliability</strong><small>Check that Android lets Mediketh deliver reminders on time.</small></div><button class="soft-button" data-check-reliability>Check</button></div>
     </section>
     <section class="settings-section"><span class="section-kicker">YOUR DATA</span>
-      <div class="setting-action"><span><strong>Export backup</strong><small>Save a copy of your local routine and history as JSON.</small></span><button class="soft-button" data-export>Export</button></div>
+      <div class="setting-action"><span><strong>Export backup</strong><small>Save a copy of your local routine and history as JSON. ${state.lastBackupAt ? `Last exported ${escapeHtml(formatDate(dateKey(new Date(state.lastBackupAt)), { month: 'short', day: 'numeric', year: 'numeric' }))}.` : 'You have not exported one yet.'}</small></span><button class="soft-button" data-export>Export</button></div>
       <div class="setting-action"><span><strong>Import backup</strong><small>Restore a Mediketh JSON backup on this device.</small></span><button class="soft-button" data-import>Choose file</button><input id="backup-file" type="file" accept="application/json,.json" hidden></div>
       <div class="setting-action destructive"><span><strong>Delete all local data</strong><small>Permanently clear this device's routine, notes, and history.</small></span><button class="danger-button" data-delete-data>Delete</button></div>
       <p class="settings-footnote">No account, cloud sync, or analytics are configured. Exported backups may contain sensitive personal notes; keep them somewhere private.</p>
@@ -582,6 +634,9 @@ function renderSettings() {
   screen.querySelector('#locale-select').addEventListener('change', event => updatePreference('locale', event.target.value));
   screen.querySelector('#motion-toggle').addEventListener('change', event => updatePreference('reducedMotion', event.target.checked));
   screen.querySelector('[data-toggle-reminders]').addEventListener('click', toggleReminders);
+  screen.querySelector('#nudge-toggle').addEventListener('change', event => updateNudge({ enabled: event.target.checked }));
+  screen.querySelector('#nudge-time').addEventListener('change', event => updateNudge({ time: event.target.value }));
+  screen.querySelector('[data-check-reliability]').addEventListener('click', checkReminderReliability);
   screen.querySelector('[data-export]').addEventListener('click', exportBackup);
   screen.querySelector('[data-import]').addEventListener('click', () => screen.querySelector('#backup-file').click());
   screen.querySelector('#backup-file').addEventListener('change', importBackup);
@@ -617,6 +672,10 @@ function openDialog({ title, description = '', content, actions, onSubmit, label
   return dialog;
 }
 
+function timeRowHtml(time) {
+  return `<div class="time-row"><input type="time" name="time" required value="${escapeHtml(time)}" aria-label="Reminder time"><button class="soft-button" type="button" data-remove-time aria-label="Remove this time">✕</button></div>`;
+}
+
 function openProductForm(productId) {
   const existing = state.products.find(product => product.id === productId);
   const days = existing?.days || DEFAULT_WEEK;
@@ -631,17 +690,16 @@ function openProductForm(productId) {
       <div class="product-lookup-result" data-product-lookup aria-live="polite"></div><button class="soft-button label-photo-button" type="button" data-read-label>Read package text (up to 3 photos)</button><small class="field-help">Photos are processed on-device and discarded; verify all recognized text yourself.</small><textarea id="package-text" class="package-text" maxlength="3000" placeholder="On-device label text will appear here; it is not saved." aria-label="Recognized package label text"></textarea>
       <div class="scan-setup"><button class="soft-button" type="button" data-enroll>Teach Mediketh this item (${MIN_ENROLL_PHOTOS}–${MAX_ENROLL_PHOTOS} photos)</button><small class="field-help">Photograph the bottle or box from different sides. Later you can scan it to mark the step complete. Only the label words are remembered, never the photos.</small><p class="product-lookup-result" data-enroll-status aria-live="polite">${scanTokens.length ? `${scanTokens.length} label words remembered.` : 'Not set up yet.'}</p></div>
       <label for="routine-kind">Type</label><select id="routine-kind" name="kind"><option ${existing?.kind !== 'Skincare' ? 'selected' : ''}>Medicine</option><option ${existing?.kind === 'Skincare' ? 'selected' : ''}>Skincare</option></select>
-      <label for="routine-times">Daily reminder times</label><input id="routine-times" name="times" type="text" placeholder="08:00, 20:00" value="${escapeHtml((existing?.times || ['08:00']).join(', '))}" aria-describedby="times-help"><small id="times-help" class="field-help">Use 24-hour times separated by commas, such as 08:00, 14:30.</small>
+      <fieldset class="time-field"><legend>Daily reminder times</legend><div class="time-list" data-time-list>${(existing?.times || ['08:00']).map(timeRowHtml).join('')}</div><button class="soft-button" type="button" data-add-time>Add another time</button><small id="times-help" class="field-help">Pick each time this step is due, up to ${MAX_REMINDER_TIMES} per day.</small></fieldset>
       <fieldset class="weekday-field"><legend>Repeat on</legend><div class="weekday-picker">${WEEKDAYS.map(day => `<label><input type="checkbox" name="days" value="${day.value}" ${days.includes(day.value) ? 'checked' : ''}><span>${escapeHtml(formatWeekday(day.value))}</span></label>`).join('')}</div></fieldset>
-      <details class="optional-details"><summary>Supply and expiry (optional)</summary><div class="optional-fields"><label for="routine-stock">Units currently in supply</label><input id="routine-stock" name="stock" type="number" min="0" step="1" value="${existing?.stock ?? ''}" placeholder="Not tracking"><label for="routine-refill">Remind me when supply reaches</label><input id="routine-refill" name="refillAt" type="number" min="0" step="1" value="${existing?.refillAt ?? ''}" placeholder="Optional"><label for="routine-expiry">Expiry date</label><input id="routine-expiry" name="expiryDate" type="date" value="${escapeHtml(existing?.expiryDate || '')}"></div></details>
+      <details class="optional-details"><summary>Supply and expiry (optional)</summary><div class="optional-fields"><label for="routine-stock">Units currently in supply</label><input id="routine-stock" name="stock" type="number" min="0" step="1" value="${existing?.stock ?? ''}" placeholder="Not tracking"><label for="routine-refill">Remind me when supply reaches</label><input id="routine-refill" name="refillAt" type="number" min="0" step="1" value="${existing?.refillAt ?? ''}" placeholder="Optional"><label for="routine-expiry">Expiry date</label><input id="routine-expiry" name="expiryDate" type="date" value="${escapeHtml(existing?.expiryDate || '')}"><label class="check-row"><input type="checkbox" name="autoSupply" ${existing?.autoSupply ? 'checked' : ''}><span>Reduce supply by 1 each time I mark this step taken</span></label></div></details>
       <p class="form-error" role="alert"></p>`,
     actions: `<button class="soft-button" type="button" data-cancel>Cancel</button><button class="primary-button" type="submit">${existing ? 'Save changes' : 'Add item'}</button>`,
     onSubmit: async formDialog => {
       const form = formDialog.querySelector('form');
       const values = new FormData(form);
       const name = String(values.get('name') || '').trim();
-      const timesText = String(values.get('times') || '');
-      const times = [...new Set(timesText.split(',').map(time => time.trim()))].filter(Boolean).sort();
+      const times = [...new Set(values.getAll('time').map(time => String(time).trim()))].filter(Boolean).sort();
       const daysSelected = values.getAll('days').map(Number).filter(day => Number.isInteger(day) && day >= 1 && day <= 7);
       const error = form.querySelector('.form-error');
       if (!name) {
@@ -650,8 +708,8 @@ function openProductForm(productId) {
         return;
       }
       if (!times.length || times.some(time => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time))) {
-        error.textContent = 'Enter one or more valid 24-hour times, separated by commas.';
-        form.querySelector('#routine-times').focus();
+        error.textContent = 'Add at least one valid reminder time.';
+        form.querySelector('[name="time"]')?.focus();
         return;
       }
       if (!daysSelected.length) {
@@ -680,6 +738,7 @@ function openProductForm(productId) {
         activeIngredient: String(values.get('activeIngredient') || '').trim(),
         barcode: barcodes[0] || '',
         barcodes,
+        autoSupply: values.get('autoSupply') === 'on',
         scanTokens: scanTokens.slice(0, MAX_SCAN_TOKENS),
         note: existing?.note || ''
       };
@@ -707,6 +766,15 @@ function openProductForm(productId) {
     const lookup = dialog.querySelector('[data-product-lookup]');
     lookup.textContent = 'Text recognized on-device. Review the label and enter the active ingredient yourself; OCR does not identify a safe dose.';
   }));
+  const timeList = dialog.querySelector('[data-time-list]');
+  dialog.querySelector('[data-add-time]').addEventListener('click', () => {
+    if (timeList.children.length >= MAX_REMINDER_TIMES) return;
+    timeList.insertAdjacentHTML('beforeend', timeRowHtml('12:00'));
+  });
+  timeList.addEventListener('click', event => {
+    const remove = event.target.closest('[data-remove-time]');
+    if (remove && timeList.children.length > 1) remove.closest('.time-row').remove();
+  });
   dialog.querySelector('[data-enroll]').addEventListener('click', () => enrollPackageLabel(words => {
     scanTokens = words;
     dialog.querySelector('[data-enroll-status]').textContent = `${words.length} label words remembered. Save the item to keep them.`;
@@ -1230,14 +1298,29 @@ async function setDoseStatus(productId, time, status, day) {
   const existing = dayLog(day)[key];
   const nextStatus = status === 'taken' && existing?.status === 'taken' ? '' : status;
   const previous = state.logs;
+  const previousProducts = state.products;
   state.logs = { ...state.logs };
+  // Optional per-item supply countdown: one unit per confirmed step, given back on undo.
+  let supplyUsed = false;
+  let lowSupplyMessage = '';
+  const doseProduct = state.products.find(item => item.id === productId);
+  if (doseProduct?.autoSupply && Number.isInteger(doseProduct.stock)) {
+    if (nextStatus === 'taken' && existing?.status !== 'taken' && doseProduct.stock > 0) {
+      const stock = doseProduct.stock - 1;
+      supplyUsed = true;
+      state.products = state.products.map(item => item.id === productId ? { ...item, stock } : item);
+      if (Number.isInteger(doseProduct.refillAt) && stock <= doseProduct.refillAt) lowSupplyMessage = ` Supply is low: ${stock} left.`;
+    } else if (nextStatus !== 'taken' && existing?.status === 'taken' && existing.supplyUsed) {
+      state.products = state.products.map(item => item.id === productId ? { ...item, stock: item.stock + 1 } : item);
+    }
+  }
   const log = { ...dayLog(day) };
   if (!log[DAY_SNAPSHOT_KEY]) {
     log[DAY_SNAPSHOT_KEY] = state.products
       .filter(product => scheduleApplies(product, day))
       .flatMap(product => product.times.map(doseTime => ({ id: product.id, name: product.name, kind: product.kind, time: doseTime, key: doseKey(product.id, doseTime) })));
   }
-  if (nextStatus) log[key] = { status: nextStatus, at: new Date().toISOString() };
+  if (nextStatus) log[key] = { status: nextStatus, at: new Date().toISOString(), ...(supplyUsed ? { supplyUsed: true } : {}) };
   else delete log[key];
   if (!Object.keys(log).some(entryKey => ![DAY_SNAPSHOT_KEY, DAY_NOTE_KEY].includes(entryKey))) delete log[DAY_SNAPSHOT_KEY];
   if (!Object.keys(log).length) delete state.logs[day];
@@ -1252,9 +1335,10 @@ async function setDoseStatus(productId, time, status, day) {
       }
     }
     render();
-    pushToast(nextStatus === 'taken' ? 'Confirmation saved.' : nextStatus === 'skipped' ? 'Marked as skipped. Follow your care instructions.' : 'Confirmation undone.');
+    pushToast(nextStatus === 'taken' ? `Confirmation saved.${lowSupplyMessage}` : nextStatus === 'skipped' ? 'Marked as skipped. Follow your care instructions.' : 'Confirmation undone.');
   } catch (error) {
     state.logs = previous;
+    state.products = previousProducts;
     pushToast(error.message, 'error');
   }
 }
@@ -1276,8 +1360,9 @@ async function snoozeDose(productId, time, day) {
         title: 'Mediketh reminder',
         body: `Reminder: ${product.name}`,
         ...alarmFields(),
+        ...actionFields(),
         schedule: { at: until },
-        extra: { mediketh: true, day, key }
+        extra: { mediketh: true, day, key, productId, time }
       }]
     });
     const previous = state.logs;
@@ -1337,7 +1422,7 @@ function updateStock(productId) {
   if (!product) return;
   const dialog = openDialog({
     title: `Update supply for ${escapeHtml(product.name)}`,
-    description: 'This is a manual estimate; Mediketh does not infer doses or automatically reduce the count.',
+    description: 'This is an estimate. Mediketh only reduces it for you if you turned that on for this item, and it never infers doses.',
     content: `<label for="stock-value">Units currently in supply</label><input id="stock-value" type="number" min="0" step="1" required value="${product.stock ?? ''}"><label for="stock-threshold">Remind me when supply reaches</label><input id="stock-threshold" type="number" min="0" step="1" value="${product.refillAt ?? ''}">`,
     actions: '<button class="soft-button" type="button" data-cancel>Cancel</button><button class="primary-button" type="submit">Save supply</button>',
     onSubmit: formDialog => {
@@ -1363,6 +1448,25 @@ function updateStock(productId) {
   dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
 }
 
+function markBackedUp() {
+  state.lastBackupAt = new Date().toISOString();
+  try {
+    save();
+  } catch {
+    // The export itself worked; only the "last backup" date could not be stored.
+  }
+  render();
+}
+
+function backupNudgeHtml() {
+  if (!state.products.length) return '';
+  const last = state.lastBackupAt ? Date.parse(state.lastBackupAt) : NaN;
+  const ageDays = Number.isFinite(last) ? (Date.now() - last) / 86400000 : Infinity;
+  if (ageDays < BACKUP_REMINDER_DAYS) return '';
+  const headline = Number.isFinite(last) ? `Your last backup was ${Math.floor(ageDays)} days ago` : 'You have not backed up yet';
+  return `<div class="help-card"><span aria-hidden="true">⚠</span><div><strong>${headline}</strong><p>Your routine lives only on this phone. If it is lost or reset, the data is gone.</p><button class="soft-button" data-open="settings">Back up now</button></div></div>`;
+}
+
 function exportBackup() {
   const writeBackup = async () => {
     const payload = {
@@ -1386,6 +1490,7 @@ function exportBackup() {
         files: [file.uri],
         dialogTitle: 'Save your Mediketh backup'
       });
+      markBackedUp();
       pushToast('Backup ready to save. Keep it somewhere private.');
       return;
     }
@@ -1395,6 +1500,7 @@ function exportBackup() {
     link.download = fileName;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    markBackedUp();
     pushToast('Backup downloaded. Store it somewhere private.');
   };
   writeBackup().catch(error => pushToast(`Backup could not be exported: ${error.message}`, 'error'));
@@ -1446,6 +1552,7 @@ function normalizeBackup(data) {
     logs: normalizeLogs(data.logs, products),
     remindersEnabled: false,
     needsLegacyNotificationCleanup: true,
+    eveningNudge: normalizeNudge(data.eveningNudge),
     preferences: normalizePreferences(data.preferences)
   };
 }
@@ -1486,11 +1593,22 @@ function renderDoseNotifications() {
           title: 'Mediketh reminder',
           body: `Time for your routine: ${product.name}`,
           ...alarmFields(),
+          ...actionFields(),
           schedule: { on: { weekday: day === 7 ? 1 : day + 1, hour, minute }, allowWhileIdle: true },
           extra: { mediketh: true, productId: product.id, time, weekday: day }
         });
       }
     }
+  }
+  if (state.eveningNudge?.enabled) {
+    const [hour, minute] = state.eveningNudge.time.split(':').map(Number);
+    notifications.push({
+      id: notificationIdFor('evening-nudge', used),
+      title: 'Mediketh reminder',
+      body: 'Evening check-in: open Mediketh to see any steps you have not marked yet.',
+      schedule: { on: { hour, minute }, allowWhileIdle: true },
+      extra: { mediketh: true, nudge: true }
+    });
   }
   for (const [day, log] of Object.entries(state.logs)) {
     for (const [key, record] of Object.entries(log)) {
@@ -1501,8 +1619,9 @@ function renderDoseNotifications() {
           title: 'Mediketh reminder',
           body: 'Your snoozed routine reminder.',
           ...alarmFields(),
+          ...actionFields(),
           schedule: { at: new Date(record.snoozedUntil) },
-          extra: { mediketh: true, day, key }
+          extra: { mediketh: true, day, key, productId: key.slice(0, key.lastIndexOf('@')), time: key.slice(key.lastIndexOf('@') + 1) }
         });
       }
     }
@@ -1542,8 +1661,37 @@ async function ensureAlarmChannel() {
   return alarmChannelReady;
 }
 
+// On Android 8+ the channel decides the sound, so only the channel id is attached to a notification.
 function alarmFields() {
-  return alarmChannelReady ? { channelId: ALARM_CHANNEL_ID, sound: ALARM_SOUND } : {};
+  return alarmChannelReady ? { channelId: ALARM_CHANNEL_ID } : {};
+}
+
+let notificationActionsReady = false;
+
+// Action buttons are baked into a notification when it is scheduled, so the action type has to be
+// registered first. If registration fails, reminders are still scheduled, just without buttons.
+async function registerNotificationActions() {
+  if (!Capacitor.isNativePlatform()) return false;
+  try {
+    await LocalNotifications.registerActionTypes({
+      types: [{
+        id: DOSE_ACTION_TYPE,
+        actions: [
+          { id: 'taken', title: 'I took it' },
+          { id: 'snooze', title: 'Snooze 10 min' },
+          { id: 'skip', title: 'Skip' }
+        ]
+      }]
+    });
+    notificationActionsReady = true;
+  } catch {
+    notificationActionsReady = false;
+  }
+  return notificationActionsReady;
+}
+
+function actionFields() {
+  return notificationActionsReady ? { actionTypeId: DOSE_ACTION_TYPE } : {};
 }
 
 // Cancels only the given notification ids. Unlike cancelNotifications(), it leaves
@@ -1566,6 +1714,7 @@ async function refreshNotificationsAfterSave() {
 async function syncNotifications() {
   const run = async () => {
     await ensureAlarmChannel();
+    await registerNotificationActions();
     const notifications = renderDoseNotifications();
     await cancelNotifications(notifications.map(notification => notification.id));
     if (notifications.length) await LocalNotifications.schedule({ notifications });
@@ -1608,6 +1757,79 @@ async function toggleReminders() {
   }
 }
 
+// Tapping a reminder (or one of its buttons) opens the app. Taken and Skip still show the usual
+// confirmation question, so a stray tap on a notification never records a dose by itself.
+function handleNotificationAction(event) {
+  const extra = event?.notification?.extra;
+  if (!extra?.mediketh) return;
+  navigate('today');
+  if (extra.nudge) return;
+  const product = state.products.find(item => item.id === extra.productId);
+  if (!product || !extra.time) return;
+  const day = todayKey();
+  if (!scheduleApplies(product, day) || !product.times.includes(extra.time)) {
+    pushToast('That reminder was for an earlier day.', 'info');
+    return;
+  }
+  if (doseStatus(product.id, extra.time, day)) {
+    pushToast('This step is already recorded.', 'info');
+    return;
+  }
+  if (event.actionId === 'snooze') void snoozeDose(product.id, extra.time, day);
+  else if (event.actionId === 'taken') confirmDoseAction(product.id, extra.time, day, 'taken');
+  else if (event.actionId === 'skip') confirmDoseAction(product.id, extra.time, day, 'skipped');
+  else if (product.scanTokens?.length) scanToComplete(product.id, extra.time, day);
+}
+
+async function updateNudge(patch) {
+  const previous = state.eveningNudge;
+  state.eveningNudge = normalizeNudge({ ...previous, ...patch });
+  try {
+    save();
+  } catch (error) {
+    state.eveningNudge = previous;
+    pushToast(error.message, 'error');
+    render();
+    return;
+  }
+  if (Capacitor.isNativePlatform() && state.remindersEnabled) await refreshNotificationsAfterSave();
+  render();
+}
+
+async function checkReminderReliability() {
+  if (!Capacitor.isNativePlatform()) {
+    pushToast('Reminder checks are available in the installed Android app.', 'info');
+    return;
+  }
+  try {
+    const [permission, exact] = await Promise.all([LocalNotifications.checkPermissions(), LocalNotifications.checkExactNotificationSetting()]);
+    const notificationsOk = permission.display === 'granted';
+    const exactOk = exact.exact_alarm !== 'denied';
+    const rows = [
+      notificationsOk ? '✓ Notifications are allowed.' : '✕ Notifications are blocked. Allow them in Android Settings → Apps → Mediketh → Notifications.',
+      exactOk ? '✓ Exact alarms are allowed, so reminders should arrive on time.' : '✕ Exact alarms are off, so reminders may arrive several minutes late.',
+      'Battery saver or "optimize battery usage" can delay or block reminders. If they arrive late, set Mediketh to Unrestricted in Android Settings → Apps → Mediketh → Battery.',
+      'Silent mode and Do Not Disturb can mute the alarm sound.'
+    ].map(row => `<li>${escapeHtml(row)}</li>`).join('');
+    const dialog = openDialog({
+      title: 'Reminder check',
+      content: `<ul class="reliability-list">${rows}</ul>`,
+      actions: `<button class="soft-button" type="button" data-cancel>Close</button>${exactOk ? '' : '<button class="primary-button" type="button" data-open-alarm-settings>Open alarm settings</button>'}`
+    });
+    dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+    dialog.querySelector('[data-open-alarm-settings]')?.addEventListener('click', async () => {
+      dialog.close();
+      try {
+        await LocalNotifications.changeExactNotificationSetting();
+      } catch (error) {
+        pushToast(`Could not open alarm settings: ${error.message}`, 'error');
+      }
+    });
+  } catch (error) {
+    pushToast(`Reminder check failed: ${error.message}`, 'error');
+  }
+}
+
 function start() {
   const requestedRoute = location.hash.slice(1);
   if (ROUTES.includes(requestedRoute)) currentRoute = requestedRoute;
@@ -1629,14 +1851,8 @@ function start() {
   });
   if (Capacitor.isNativePlatform()) {
     void ensureAlarmChannel();
-    // Tapping a reminder opens Today; if that step uses scan-to-complete, open the scan dialog.
-    LocalNotifications.addListener('localNotificationActionPerformed', event => {
-      const extra = event?.notification?.extra;
-      if (!extra?.mediketh) return;
-      navigate('today');
-      const product = state.products.find(item => item.id === extra.productId);
-      if (product?.scanTokens?.length && extra.time) scanToComplete(product.id, extra.time, todayKey());
-    }).catch(() => {});
+    void registerNotificationActions();
+    LocalNotifications.addListener('localNotificationActionPerformed', handleNotificationAction).catch(() => {});
   }
   render();
   if (Capacitor.isNativePlatform() && state.needsLegacyNotificationCleanup) {

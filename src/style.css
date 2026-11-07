@@ -373,3 +373,10 @@ html.barcode-scanner-active #app { visibility: hidden; }
   transition-duration: .01ms !important;
 }
 .scan-setup{display:flex;flex-direction:column;gap:8px;margin:12px 0;padding:12px;border:1px dashed var(--line,#34463a);border-radius:14px}
+.time-field{border:0;padding:0;margin:12px 0}
+.time-field legend{font-weight:600;margin-bottom:6px}
+.time-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.time-row input{flex:1}
+.check-row{display:flex;gap:10px;align-items:center;margin-top:10px}
+.check-row input{width:auto;flex:none}
+.reliability-list{list-style:none;padding:0;margin:12px 0;display:flex;flex-direction:column;gap:10px;line-height:1.4}

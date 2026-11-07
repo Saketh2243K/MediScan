@@ -11,6 +11,13 @@ if (!manifest.includes('android.permission.CAMERA')) {
     '    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n\n    <application'
   );
 }
+// Android 12+ only delivers reminders at the exact minute when this permission is declared.
+if (!manifest.includes('android.permission.SCHEDULE_EXACT_ALARM')) {
+  manifest = manifest.replace(
+    '<application',
+    '    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n\n    <application'
+  );
+}
 if (!manifest.includes('com.google.mlkit.vision.DEPENDENCIES')) {
   const applicationTag = manifest.match(/<application\b[^>]*>/);
   if (!applicationTag) throw new Error(`Could not find the application element in ${manifestPath}.`);
